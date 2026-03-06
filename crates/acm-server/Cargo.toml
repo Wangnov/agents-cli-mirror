@@ -1,0 +1,69 @@
+[package]
+name = "acm-server"
+version = "0.1.15"
+edition = "2024"
+rust-version = "1.85"
+description = "Config-driven release mirror server"
+license = "AGPL-3.0"
+repository = "https://github.com/wangnov/agents-cli-mirror"
+
+[features]
+default = ["s3"]
+s3 = [
+  "dep:aws-config",
+  "dep:aws-credential-types",
+  "dep:aws-sdk-s3",
+]
+
+[dependencies]
+acm-core = { path = "../acm-core", version = "0.1.15" }
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+
+# Web 框架
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tower = { version = "0.5", features = ["util"] }
+
+# HTTP 客户端
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# SHA256 校验
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+hmac = "0.12"
+sha1 = "0.10"
+urlencoding = "2.1"
+bytes = "1"
+
+# 日志追踪
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 时间处理
+chrono = { version = "0.4", features = ["serde"] }
+
+# 错误处理
+thiserror = "2"
+anyhow = "1"
+
+# 异步流处理
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
+
+# 命令行参数
+clap = { version = "4", features = ["derive"] }
+aws-config = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"], optional = true }
+aws-credential-types = { version = "1", optional = true }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "default-https-client", "rt-tokio"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+hyper = { version = "1.0", features = ["full"] }
+http-body-util = "0.1"

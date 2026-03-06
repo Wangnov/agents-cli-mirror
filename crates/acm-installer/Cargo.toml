@@ -1,0 +1,16 @@
+[package]
+name = "acm-installer"
+version = "0.1.15"
+edition = "2024"
+rust-version = "1.85"
+description = "ACM bootstrap installer"
+license = "AGPL-3.0"
+repository = "https://github.com/wangnov/agents-cli-mirror"
+publish = false
+
+[[bin]]
+name = "acm-installer"
+path = "src/main.rs"
+
+[dependencies]
+acm-client = { path = "../acm-client", version = "0.1.15" }

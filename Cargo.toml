@@ -1,0 +1,24 @@
+[workspace]
+members = [
+  "crates/acm",
+  "crates/acm-core",
+  "crates/acm-client",
+  "crates/acm-full",
+  "crates/acm-installer",
+  "crates/acm-server",
+]
+resolver = "2"
+
+[workspace.metadata.release]
+shared-version = true
+tag-name = "v{{version}}"
+publish = false
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+strip = "symbols"
+
+[profile.release]
+strip = "symbols"

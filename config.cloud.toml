@@ -1,0 +1,42 @@
+# 纯云模式示例配置（推荐用于 GitHub Actions + R2 自定义域名）
+#
+# 说明：
+# - 所有敏感信息（R2/S3 凭证、public_url）建议通过环境变量注入
+# - GitHub Actions 里请配合 `.github/workflows/mirror-cloud-sync.yml` 使用
+
+[server]
+# 纯云模式下该值用于脚本内的默认 MIRROR_URL（例如 "https://mirror.example.com"）
+# 建议通过 env: MIRROR_PUBLIC_URL 注入，而不是写死在仓库里。
+installer_provider = "installer"
+
+[cache]
+dir = "./cache"
+max_versions = 10
+
+[storage]
+mode = "s3"
+
+[update]
+# 纯云模式的定时刷新由 GitHub Actions 负责；这里可以关闭
+enabled = false
+interval_minutes = 10
+
+[[providers]]
+name = "codex"
+source = "github_release"
+repo = "openai/codex"
+tags = ["latest"]
+update_policy = "tracking"
+
+[providers.ui]
+preset = "codex"
+
+[[providers]]
+name = "installer"
+source = "github_release"
+repo = "wangnov/agents-cli-mirror"
+tags = ["latest"]
+update_policy = "tracking"
+
+[providers.ui]
+preset = "acm"

@@ -1,0 +1,19 @@
+[package]
+name = "acm-full"
+version = "0.1.15"
+edition = "2024"
+rust-version = "1.85"
+description = "ACM full client binary wrapper (includes s3 support)"
+license = "AGPL-3.0"
+repository = "https://github.com/wangnov/agents-cli-mirror"
+publish = false
+
+[package.metadata.dist]
+dist = true
+
+[[bin]]
+name = "acm"
+path = "src/main.rs"
+
+[dependencies]
+acm-client = { path = "../acm-client", version = "0.1.15", features = ["s3"] }

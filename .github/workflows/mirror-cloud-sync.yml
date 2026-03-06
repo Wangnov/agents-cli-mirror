@@ -1,0 +1,69 @@
+name: mirror-cloud-sync
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "provider name (or all)"
+        required: true
+        default: "all"
+
+concurrency:
+  group: mirror-cloud-sync-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.provider || 'all' }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore mirror cache (metadata + tags)
+        uses: actions/cache@v4
+        with:
+          path: |
+            cache/metadata.json
+            cache/**/tags/**
+          key: mirror-cloud-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            mirror-cloud-cache-${{ runner.os }}-
+
+      - name: Build acm-server
+        run: cargo build -p acm-server --release
+
+      - name: Sync upstream artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MIRROR_PUBLIC_URL: ${{ secrets.MIRROR_PUBLIC_URL }}
+          MIRROR_STORAGE_MODE: s3
+          MIRROR_S3_ENDPOINT: ${{ secrets.MIRROR_S3_ENDPOINT }}
+          MIRROR_S3_BUCKET: ${{ secrets.MIRROR_S3_BUCKET }}
+          MIRROR_S3_ACCESS_KEY_ID: ${{ secrets.MIRROR_S3_ACCESS_KEY_ID }}
+          MIRROR_S3_SECRET_ACCESS_KEY: ${{ secrets.MIRROR_S3_SECRET_ACCESS_KEY }}
+          MIRROR_S3_REGION: ${{ secrets.MIRROR_S3_REGION }}
+          MIRROR_S3_PREFIX: ${{ secrets.MIRROR_S3_PREFIX }}
+        run: |
+          PROVIDER="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.provider || 'all' }}"
+          if [[ "$PROVIDER" != "all" && "$PROVIDER" != "installer" ]]; then
+            target/release/acm-server sync --config config.cloud.toml --provider "installer"
+          fi
+          target/release/acm-server sync --config config.cloud.toml --provider "$PROVIDER"
+
+      - name: Publish static endpoints to R2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MIRROR_PUBLIC_URL: ${{ secrets.MIRROR_PUBLIC_URL }}
+          MIRROR_STORAGE_MODE: s3
+          MIRROR_S3_ENDPOINT: ${{ secrets.MIRROR_S3_ENDPOINT }}
+          MIRROR_S3_BUCKET: ${{ secrets.MIRROR_S3_BUCKET }}
+          MIRROR_S3_ACCESS_KEY_ID: ${{ secrets.MIRROR_S3_ACCESS_KEY_ID }}
+          MIRROR_S3_SECRET_ACCESS_KEY: ${{ secrets.MIRROR_S3_SECRET_ACCESS_KEY }}
+          MIRROR_S3_REGION: ${{ secrets.MIRROR_S3_REGION }}
+          MIRROR_S3_PREFIX: ${{ secrets.MIRROR_S3_PREFIX }}
+        run: |
+          target/release/acm-server publish --config config.cloud.toml --provider "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.provider || 'all' }}"

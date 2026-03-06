@@ -1,0 +1,235 @@
+# Server configuration
+[server]
+port = 1357
+host = "0.0.0.0"
+# Public URL for install scripts (used in curl commands)
+# NOTE: public_url 必须配置，否则脚本接口将返回 503
+# Examples:
+#   public_url = "http://yourip:1357"      # Direct IP
+#   public_url = "https://mirror.example.com"       # Domain with HTTPS
+# If not set, install scripts will return 503
+# public_url = "http://yourip:1357"
+
+# Optional: admin token for POST /api/*/refresh (Authorization: Bearer <token>)
+# If not set, refresh endpoints will return 403.
+# refresh_token = "replace-with-a-strong-random-token"
+
+# Optional: refresh throttling window per provider (seconds). Set to 0 to disable.
+# refresh_min_interval_seconds = 10
+
+# Installer provider used by script endpoints:
+#   /install/{provider}
+#   /update/{provider}
+#   /uninstall/{provider}
+#   /status
+#   /doctor
+# installer_provider = "installer"
+
+# Client defaults (for acm / acm-installer)
+[client]
+# Optional default mirror used when --mirror-url and MIRROR_URL are not provided.
+# Example:
+# default_mirror_url = "https://mirror.example.com"
+# default_mirror_url = ""
+
+# Brand assets (pixel art + tagline)
+[brand]
+assets_file = "assets/brand.toml"
+
+# HTTP settings
+[http]
+# 连接超时（秒）
+connect_timeout_seconds = 10
+# 请求总超时（秒），文件较大时建议适当调高；设为 0 表示不限制总时长
+request_timeout_seconds = 3600
+
+# Cache settings
+[cache]
+dir = "./cache"
+# 设为 0 表示只保留 tag 引用的版本（例如 stable/latest）
+max_versions = 10
+
+# Storage settings (local / s3)
+[storage]
+# local / s3
+mode = "local"
+
+# S3/R2 配置（当 mode = "s3" 时生效）
+[storage.s3]
+# R2 endpoint 例：https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+endpoint = ""
+bucket = ""
+access_key_id = ""
+secret_access_key = ""
+# 可选：STS 临时凭证
+# session_token = ""
+# R2 通常使用 "auto"，默认固定区域 "us-east-1"
+region = "auto"
+# 可选：对象前缀，例如 "mirror"
+prefix = ""
+# R2 建议启用 path-style
+path_style = true
+# 预签名链接过期时间（秒）
+expires_seconds = 900
+# S3 兼容服务可能限制最大分片数（例如 20）
+multipart_max_parts = 20
+# 单个分片上传最大尝试次数（含首次）
+multipart_part_max_attempts = 5
+
+# Auto-update settings
+[update]
+interval_minutes = 10
+enabled = true
+
+# Dynamic provider registry (recommended)
+# Each entry supports:
+# - source = "github_release" (repo required)
+# - source = "gcs_release" (upstream_url required)
+# - source = "static" (static_version recommended; no upstream polling)
+# - files = ["path/to/file"] (可选；generic gcs/static 推荐显式给出，github 留空表示镜像全部 release assets)
+# - [providers.ui] preset = "acm|codex|claude|gemini" (installer install/update/uninstall UI theme)
+[[providers]]
+name = "claude-code"
+enabled = true
+source = "gcs_release"
+update_policy = "tracking" # tracking / pinned / manual
+tags = ["stable", "latest"]
+platforms = [
+    "darwin-x64",
+    "darwin-arm64",
+    "linux-x64",
+    "linux-arm64",
+    "linux-x64-musl",
+    "linux-arm64-musl",
+    "win32-x64"
+]
+upstream_url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
+files = [
+    "darwin-x64/claude",
+    "darwin-arm64/claude",
+    "linux-x64/claude",
+    "linux-arm64/claude",
+    "linux-x64-musl/claude",
+    "linux-arm64-musl/claude",
+    "win32-x64/claude.exe"
+]
+
+[providers.ui]
+preset = "claude"
+
+[[providers]]
+name = "codex"
+enabled = true
+source = "github_release"
+repo = "openai/codex"
+update_policy = "tracking"
+tags = ["stable", "latest"]
+platforms = [
+    "darwin-x64",
+    "darwin-arm64",
+    "linux-x64",
+    "linux-arm64",
+    "linux-x64-musl",
+    "linux-arm64-musl",
+    "win32-x64",
+    "win32-arm64"
+]
+include_prerelease = false
+
+[providers.ui]
+preset = "codex"
+
+# Example smoke: non-built-in provider from GitHub Release (real upstream)
+# Enable and refresh:
+#   curl -fsS -X POST -H "Authorization: Bearer <token>" http://127.0.0.1:1357/api/ripgrep/refresh
+# Then check:
+#   curl -fsSL http://127.0.0.1:1357/ripgrep/latest
+#   curl -fsSL http://127.0.0.1:1357/api/ripgrep/info
+# Download path pattern:
+#   /ripgrep/{version}/files/{asset_name}
+#
+# [[providers]]
+# name = "ripgrep"
+# enabled = true
+# source = "github_release"
+# repo = "BurntSushi/ripgrep"
+# update_policy = "tracking"
+# tags = ["latest"]
+# files = []   # empty = mirror all release assets
+
+# Example: generic provider from arbitrary GCS release directory
+# [[providers]]
+# name = "my-gcs-tool"
+# enabled = true
+# source = "gcs_release"
+# upstream_url = "https://storage.googleapis.com/my-bucket/my-tool-releases"
+# update_policy = "pinned"
+# tags = ["v1.2.3"]      # pinned + explicit version tags
+# files = ["my-tool-linux-amd64.tar.gz", "my-tool-darwin-arm64.tar.gz"]
+
+[[providers]]
+name = "gemini"
+enabled = true
+source = "github_release"
+repo = "google-gemini/gemini-cli"
+update_policy = "tracking"
+tags = ["stable", "latest"]
+include_prerelease = false
+
+[providers.ui]
+preset = "gemini"
+
+[[providers]]
+name = "installer"
+enabled = true
+source = "github_release"
+repo = "Wangnov/agents-cli-mirror"
+update_policy = "tracking"
+tags = ["latest"]
+platforms = [
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc"
+]
+include_prerelease = false
+
+[[providers]]
+name = "node"
+enabled = true
+source = "github_release"
+repo = "Wangnov/agents-cli-mirror"
+update_policy = "tracking"
+tags = ["latest"]
+platforms = [
+    "darwin-x64",
+    "darwin-arm64",
+    "linux-x64",
+    "linux-arm64",
+    "win32-x64",
+    "win32-arm64"
+]
+include_prerelease = false
+
+[[providers]]
+name = "node-pty"
+enabled = true
+source = "github_release"
+repo = "Wangnov/agents-cli-mirror"
+update_policy = "tracking"
+tags = ["latest"]
+platforms = [
+    "darwin-x64",
+    "darwin-arm64",
+    "linux-x64",
+    "linux-arm64",
+    "linux-x64-musl",
+    "linux-arm64-musl",
+    "win32-x64",
+    "win32-arm64"
+]
+include_prerelease = false

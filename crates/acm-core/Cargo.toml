@@ -1,0 +1,22 @@
+[package]
+name = "acm-core"
+version = "0.1.15"
+edition = "2024"
+rust-version = "1.85"
+description = "Shared core types and engines for ACM"
+license = "AGPL-3.0"
+repository = "https://github.com/wangnov/agents-cli-mirror"
+
+[dependencies]
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+tempfile = "3"
+tar = "0.4"
+flate2 = "1.0"
+xz2 = "0.1"
+zip = "7.0"
+
+[dev-dependencies]

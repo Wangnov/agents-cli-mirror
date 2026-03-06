@@ -1,0 +1,72 @@
+name: installer-release-assets
+
+permissions:
+  contents: write
+
+on:
+  release:
+    types: [published]
+  # GitHub Actions prevents events triggered by the workflow's own GITHUB_TOKEN
+  # from automatically triggering other workflows. Our releases are created by
+  # the cargo-dist "Release" workflow, so the `release.published` trigger above
+  # won't reliably fire. `workflow_run` runs after the Release workflow completes
+  # and is the main trigger for generating checksums.json automatically.
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to process"
+        required: true
+
+jobs:
+  checksums:
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v')) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Generate checksums.json for installer release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag || github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$TAG" ]; then
+            echo "TAG is required"
+            exit 1
+          fi
+
+          assets=$(gh release view "$TAG" --json assets -q '.assets[].name')
+          if ! echo "$assets" | grep -E -q '^acm-installer-.*\.(tar\.xz|zip)$'; then
+            echo "No installer assets found for ${TAG}, skipping."
+            exit 0
+          fi
+
+          work=$(mktemp -d)
+          mkdir -p "$work/assets"
+          gh release download "$TAG" \
+            -p "acm-installer-*.tar.xz" \
+            -p "acm-installer-*.zip" \
+            -p "acm-installer-*.tar.xz.sha256" \
+            -p "acm-installer-*.zip.sha256" \
+            -D "$work/assets"
+
+          python3 .github/scripts/prepare-installer-cache.py \
+            --assets-dir "$work/assets" \
+            --cache-dir "$work/cache" \
+            --version "$TAG"
+
+          checksums="$work/cache/installer/versions/$TAG/checksums.json"
+          if [ ! -f "$checksums" ]; then
+            echo "checksums.json not generated"
+            exit 1
+          fi
+
+          gh release upload "$TAG" "$checksums" --clobber
