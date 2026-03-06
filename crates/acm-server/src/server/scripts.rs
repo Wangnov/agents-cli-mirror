@@ -359,15 +359,45 @@ if not isinstance(entry, dict):
 files = entry.get('files')
 if isinstance(files, dict) and files:
     candidates = sorted(files.keys())
-    filename = next(
-        (
-            name for name in candidates
-            if name == bin_name
-            or name == f"{{bin_name}}.exe"
-            or name.startswith(f"{{bin_name}}-")
-            or name.startswith(f"{{bin_name}}.")
+    preferred = [
+        name for name in candidates
+        if name == bin_name
+        or name == f"{{bin_name}}.exe"
+        or name.startswith(f"{{bin_name}}-")
+        or name.startswith(f"{{bin_name}}.")
+    ]
+    if not preferred:
+        preferred = candidates
+
+    def installable_priority(name: str) -> int:
+        lower = name.lower()
+        if lower.endswith('.sha256') or lower.endswith('.sum') or lower.endswith('.json'):
+            return 99
+        if 'windows' in platform:
+            if lower.endswith('.zip'):
+                return 0
+            if lower.endswith('.exe'):
+                return 1
+            return 99
+        if lower.endswith('.tar.gz'):
+            return 0
+        if lower.endswith('.tgz'):
+            return 1
+        if lower.endswith('.tar.xz'):
+            return 2
+        if lower.endswith('.zip'):
+            return 3
+        if '.' not in lower:
+            return 4
+        return 99
+
+    filename = min(
+        preferred,
+        key=lambda name: (
+            0 if platform in name else 1,
+            installable_priority(name),
+            name,
         ),
-        candidates[0],
     )
     sha256 = files.get(filename, {{}}).get('sha256') or entry.get('sha256')
 else:
@@ -528,14 +558,19 @@ if (-not $Entry) {{ throw "no installer entry for platform" }}
 
 if ($Entry.files -and $Entry.files.PSObject.Properties.Count -gt 0) {{
     $FileProps = $Entry.files.PSObject.Properties | Sort-Object Name
-    $FileProp = $FileProps |
+    $PreferredProps = $FileProps |
         Where-Object {{
             $_.Name -eq $InstallerBin -or
             $_.Name -eq "$InstallerBin.exe" -or
             $_.Name.StartsWith("$InstallerBin-") -or
             $_.Name.StartsWith("$InstallerBin.")
-        }} |
+        }}
+    $FileProp = $PreferredProps |
+        Where-Object {{ $_.Name.Contains($Platform) }} |
         Select-Object -First 1
+    if (-not $FileProp) {{
+        $FileProp = $PreferredProps | Select-Object -First 1
+    }}
     if (-not $FileProp) {{
         $FileProp = $FileProps | Select-Object -First 1
     }}
@@ -689,6 +724,7 @@ mod tests {
 
         assert!(script.contains("\"$INSTALLER_VERSION\" \"$PLATFORM\" \"$BIN_NAME\""));
         assert!(script.contains("name.startswith(f\"{bin_name}-\")"));
+        assert!(script.contains("0 if platform in name else 1"));
     }
 
     #[test]
@@ -705,6 +741,7 @@ mod tests {
 
         assert!(script.contains("$_.Name -eq $InstallerBin"));
         assert!(script.contains("$_.Name.StartsWith(\"$InstallerBin-\")"));
+        assert!(script.contains("$_.Name.Contains($Platform)"));
     }
 
     #[test]
