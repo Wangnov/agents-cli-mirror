@@ -10,7 +10,6 @@ on:
 
 jobs:
   test-native:
-    if: ${{ github.event.inputs.mirror_url != '' || secrets.MIRROR_PUBLIC_URL != '' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -32,6 +31,11 @@ jobs:
       SKIP_CODEX: ${{ matrix.skip_codex && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Ensure mirror URL configured
+        shell: bash
+        run: |
+          test -n "$MIRROR_URL"
 
       - name: Probe mirror (Unix)
         if: startsWith(matrix.os, 'macos')
@@ -73,7 +77,6 @@ jobs:
           }
 
   test-linux-container:
-    if: ${{ github.event.inputs.mirror_url != '' || secrets.MIRROR_PUBLIC_URL != '' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -101,6 +104,11 @@ jobs:
       SKIP_GEMINI: "1"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Ensure mirror URL configured
+        shell: bash
+        run: |
+          test -n "$MIRROR_URL"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
