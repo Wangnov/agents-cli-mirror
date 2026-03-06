@@ -1,6 +1,6 @@
 [package]
 name = "acm-installer"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.85"
 description = "ACM bootstrap installer"
@@ -16,4 +16,4 @@ name = "acm-installer"
 path = "src/main.rs"
 
 [dependencies]
-acm-client = { path = "../acm-client", version = "0.1.1" }
+acm-client = { path = "../acm-client", version = "0.1.2" }
