@@ -75,6 +75,10 @@ pub(super) fn select_asset_for_platform(
         .collect::<Vec<_>>();
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
+    if let Some((name, meta)) = select_installable_asset(&files, &hints, platform) {
+        return Ok((name, meta));
+    }
+
     if let Some((name, meta)) = files
         .iter()
         .find(|(name, _)| hints.iter().any(|hint| name.contains(hint)))
@@ -102,6 +106,67 @@ fn platform_hints(platform: &str) -> Vec<&'static str> {
         }
         _ => vec![],
     }
+}
+
+fn select_installable_asset(
+    files: &[(String, ArtifactEntry)],
+    hints: &[&str],
+    platform: &str,
+) -> Option<(String, ArtifactEntry)> {
+    let hinted = files
+        .iter()
+        .filter(|(name, _)| hints.iter().any(|hint| name.contains(hint)))
+        .filter_map(|(name, meta)| {
+            installable_priority(name, platform).map(|priority| (priority, name, meta))
+        })
+        .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+    if let Some((_, name, meta)) = hinted {
+        return Some((name.clone(), meta.clone()));
+    }
+
+    files
+        .iter()
+        .filter_map(|(name, meta)| {
+            installable_priority(name, platform).map(|priority| (priority, name, meta))
+        })
+        .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)))
+        .map(|(_, name, meta)| (name.clone(), meta.clone()))
+}
+
+fn installable_priority(name: &str, platform: &str) -> Option<u8> {
+    let lower = name.to_ascii_lowercase();
+
+    if lower.ends_with(".sha256") || lower.ends_with(".sum") || lower.ends_with(".json") {
+        return None;
+    }
+
+    if platform.contains("windows") {
+        if lower.ends_with(".zip") {
+            return Some(0);
+        }
+        if lower.ends_with(".exe") {
+            return Some(1);
+        }
+        return None;
+    }
+
+    if lower.ends_with(".tar.gz") {
+        return Some(0);
+    }
+    if lower.ends_with(".tgz") {
+        return Some(1);
+    }
+    if lower.ends_with(".tar.xz") {
+        return Some(2);
+    }
+    if lower.ends_with(".zip") {
+        return Some(3);
+    }
+    if !lower.contains('.') {
+        return Some(4);
+    }
+
+    None
 }
 
 pub(super) fn ensure_downloaded(
@@ -231,4 +296,80 @@ pub(super) fn encode_filepath(path: &str) -> String {
         .map(|segment| urlencoding::encode(segment).into_owned())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn artifact(sha256: &str) -> ArtifactEntry {
+        ArtifactEntry {
+            sha256: sha256.to_string(),
+            size: 1,
+        }
+    }
+
+    fn entry(filename: &str, files: &[(&str, &str)]) -> PlatformEntry {
+        PlatformEntry {
+            sha256: "platform-sha".to_string(),
+            size: 1,
+            filename: filename.to_string(),
+            files: files
+                .iter()
+                .map(|(name, sha)| ((*name).to_string(), artifact(sha)))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn select_asset_for_platform_prefers_installable_archive_over_dmg() {
+        let mut checksums = HashMap::new();
+        checksums.insert(
+            "v1.0.0".to_string(),
+            HashMap::from([(
+                "universal".to_string(),
+                entry(
+                    "codex-aarch64-apple-darwin.dmg",
+                    &[
+                        ("codex-aarch64-apple-darwin.dmg", "sha-dmg"),
+                        ("codex-aarch64-apple-darwin.tar.gz", "sha-targz"),
+                    ],
+                ),
+            )]),
+        );
+
+        let (name, meta) = select_asset_for_platform(&checksums, "v1.0.0", "aarch64-apple-darwin")
+            .expect("select asset");
+
+        assert_eq!(name, "codex-aarch64-apple-darwin.tar.gz");
+        assert_eq!(meta.sha256, "sha-targz");
+    }
+
+    #[test]
+    fn select_asset_for_platform_skips_checksum_sidecars() {
+        let mut checksums = HashMap::new();
+        checksums.insert(
+            "v1.0.0".to_string(),
+            HashMap::from([(
+                "universal".to_string(),
+                entry(
+                    "acm-installer-x86_64-pc-windows-msvc.zip",
+                    &[
+                        ("acm-installer-x86_64-pc-windows-msvc.zip", "sha-zip"),
+                        (
+                            "acm-installer-x86_64-pc-windows-msvc.zip.sha256",
+                            "sha-sidecar",
+                        ),
+                    ],
+                ),
+            )]),
+        );
+
+        let (name, meta) =
+            select_asset_for_platform(&checksums, "v1.0.0", "x86_64-pc-windows-msvc")
+                .expect("select asset");
+
+        assert_eq!(name, "acm-installer-x86_64-pc-windows-msvc.zip");
+        assert_eq!(meta.sha256, "sha-zip");
+    }
 }
