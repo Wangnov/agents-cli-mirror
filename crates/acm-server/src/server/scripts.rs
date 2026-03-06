@@ -331,6 +331,10 @@ calc_sha256() {{
     fi
 }}
 
+normalize_lower() {{
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}}
+
 PLATFORM="$(detect_platform)"
 
 if [[ -z "$INSTALLER_VERSION" ]]; then
@@ -405,7 +409,7 @@ CACHE_ARCHIVE="$CACHE_ARCHIVE_DIR/$ARCHIVE_BASENAME"
 
 if [[ -f "$CACHE_ARCHIVE" ]]; then
     CACHED_SHA256="$(calc_sha256 "$CACHE_ARCHIVE")"
-    if [[ "${{CACHED_SHA256,,}}" != "${{EXPECTED_SHA256,,}}" ]]; then
+    if [[ "$(normalize_lower "$CACHED_SHA256")" != "$(normalize_lower "$EXPECTED_SHA256")" ]]; then
         rm -f "$CACHE_ARCHIVE"
     fi
 fi
@@ -414,7 +418,7 @@ if [[ ! -f "$CACHE_ARCHIVE" ]]; then
     TMP_ARCHIVE="$TMP_DIR/$ARCHIVE_BASENAME"
     curl -fsSL "$MIRROR_URL/$INSTALLER_PROVIDER/$INSTALLER_VERSION/files/$ENCODED_FILE" -o "$TMP_ARCHIVE"
     ACTUAL_SHA256="$(calc_sha256 "$TMP_ARCHIVE")"
-    if [[ "${{ACTUAL_SHA256,,}}" != "${{EXPECTED_SHA256,,}}" ]]; then
+    if [[ "$(normalize_lower "$ACTUAL_SHA256")" != "$(normalize_lower "$EXPECTED_SHA256")" ]]; then
         echo "Checksum mismatch: expected $EXPECTED_SHA256, got $ACTUAL_SHA256" >&2
         exit 1
     fi
@@ -699,5 +703,23 @@ mod tests {
 
         assert!(script.contains("$_.Name -eq $InstallerBin"));
         assert!(script.contains("$_.Name.StartsWith(\"$InstallerBin-\")"));
+    }
+
+    #[test]
+    fn render_sh_script_avoids_bash4_case_conversion() {
+        let script = render_bootstrap_script(
+            ScriptCommand::Install,
+            Some("tool-a"),
+            ScriptFlavor::Sh,
+            Some("https://mirror.example.com"),
+            "installer",
+            "acm-installer",
+        )
+        .expect("render shell bootstrap script");
+
+        assert!(!script.contains("${ACTUAL_SHA256,,}"));
+        assert!(!script.contains("${EXPECTED_SHA256,,}"));
+        assert!(script.contains("normalize_lower()"));
+        assert!(script.contains("tr '[:upper:]' '[:lower:]'"));
     }
 }
