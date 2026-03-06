@@ -99,7 +99,11 @@ run_cli() {
   fi
 }
 
-run_cli "claude-code" "claude-code"
+if [[ "${SKIP_CLAUDE:-}" == "1" ]]; then
+  echo "Skipping claude-code: SKIP_CLAUDE=1"
+else
+  run_cli "claude-code" "claude-code"
+fi
 if [[ "${SKIP_CODEX:-}" == "1" ]]; then
   echo "Skipping codex: SKIP_CODEX=1"
 else

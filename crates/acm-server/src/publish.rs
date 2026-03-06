@@ -105,6 +105,40 @@ async fn put_json_pretty(
     }
 }
 
+struct PublishScriptContext<'a> {
+    storage_clients: &'a StorageClients,
+    config: &'a Config,
+    installer_provider: &'a str,
+    mirror_url: &'a str,
+}
+
+async fn publish_command_script(
+    ctx: &PublishScriptContext<'_>,
+    provider_name: Option<&str>,
+    command: ScriptCommand,
+    flavor: ScriptFlavor,
+    object_key: &str,
+) -> Result<()> {
+    let script = crate::server::scripts::render_bootstrap_script(
+        command,
+        provider_name,
+        flavor,
+        Some(ctx.mirror_url),
+        ctx.installer_provider,
+        INSTALLER_BINARY_NAME,
+    )
+    .map_err(|status| anyhow::anyhow!("render {} failed: {}", object_key, status))?;
+
+    put_text(
+        ctx.storage_clients,
+        ctx.config,
+        object_key,
+        flavor.content_type(),
+        script,
+    )
+    .await
+}
+
 pub async fn publish(
     mut config: Config,
     cache: CacheManager,
@@ -220,42 +254,138 @@ pub async fn publish(
         )
         .await?;
 
-        // Publish install scripts: /{provider}/install.sh and legacy /install/{provider}
         let mirror_url = config
             .server
             .public_url
             .as_deref()
             .context("server.public_url is required for publish")?;
         let installer_provider = config.server.installer_provider.as_str();
-
-        let install_sh = crate::server::scripts::render_bootstrap_script(
-            ScriptCommand::Install,
-            Some(provider_name),
-            ScriptFlavor::Sh,
-            Some(mirror_url),
+        let script_ctx = PublishScriptContext {
+            storage_clients: &storage_clients,
+            config: &config,
             installer_provider,
-            INSTALLER_BINARY_NAME,
-        )
-        .map_err(|status| anyhow::anyhow!("render install.sh failed: {}", status))?;
+            mirror_url,
+        };
 
-        put_text(
-            &storage_clients,
-            &config,
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Install,
+            ScriptFlavor::Sh,
             &format!("{}/install.sh", provider_name),
-            ScriptFlavor::Sh.content_type(),
-            install_sh.clone(),
         )
         .await?;
-
-        put_text(
-            &storage_clients,
-            &config,
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Install,
+            ScriptFlavor::Ps1,
+            &format!("{}/install.ps1", provider_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Install,
+            ScriptFlavor::Sh,
             &format!("install/{}", provider_name),
-            ScriptFlavor::Sh.content_type(),
-            install_sh,
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Update,
+            ScriptFlavor::Sh,
+            &format!("{}/update.sh", provider_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Update,
+            ScriptFlavor::Ps1,
+            &format!("{}/update.ps1", provider_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Update,
+            ScriptFlavor::Sh,
+            &format!("update/{}", provider_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Uninstall,
+            ScriptFlavor::Sh,
+            &format!("{}/uninstall.sh", provider_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Uninstall,
+            ScriptFlavor::Ps1,
+            &format!("{}/uninstall.ps1", provider_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Uninstall,
+            ScriptFlavor::Sh,
+            &format!("uninstall/{}", provider_name),
         )
         .await?;
     }
+
+    let mirror_url = config
+        .server
+        .public_url
+        .as_deref()
+        .context("server.public_url is required for publish")?;
+    let installer_provider = config.server.installer_provider.as_str();
+    let script_ctx = PublishScriptContext {
+        storage_clients: &storage_clients,
+        config: &config,
+        installer_provider,
+        mirror_url,
+    };
+
+    publish_command_script(
+        &script_ctx,
+        None,
+        ScriptCommand::Status,
+        ScriptFlavor::Sh,
+        "status",
+    )
+    .await?;
+    publish_command_script(
+        &script_ctx,
+        None,
+        ScriptCommand::Status,
+        ScriptFlavor::Ps1,
+        "status.ps1",
+    )
+    .await?;
+    publish_command_script(
+        &script_ctx,
+        None,
+        ScriptCommand::Doctor,
+        ScriptFlavor::Sh,
+        "doctor",
+    )
+    .await?;
+    publish_command_script(
+        &script_ctx,
+        None,
+        ScriptCommand::Doctor,
+        ScriptFlavor::Ps1,
+        "doctor.ps1",
+    )
+    .await?;
 
     Ok(())
 }

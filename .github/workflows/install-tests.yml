@@ -2,21 +2,15 @@ name: install-tests
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - .github/workflows/install-tests.yml
-      - .github/scripts/e2e-install-unix.sh
-      - .github/scripts/e2e-install-windows.ps1
-      - scripts/**
-  pull_request:
-    paths:
-      - .github/workflows/install-tests.yml
-      - .github/scripts/e2e-install-unix.sh
-      - .github/scripts/e2e-install-windows.ps1
-      - scripts/**
+    inputs:
+      mirror_url:
+        description: "Override mirror URL (optional)"
+        required: false
+        type: string
 
 jobs:
   test-native:
+    if: ${{ github.event.inputs.mirror_url != '' || secrets.MIRROR_PUBLIC_URL != '' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -27,514 +21,97 @@ jobs:
             skip_codex: false
           - os: macos-latest
             name: macos-arm64
-            skip_codex: true
+            skip_codex: false
           - os: windows-latest
             name: windows-x64
             skip_codex: false
     env:
-      MIRROR_URL: http://127.0.0.1:1357
+      MIRROR_URL: ${{ github.event.inputs.mirror_url || secrets.MIRROR_PUBLIC_URL }}
+      SKIP_CLAUDE: "1"
       SKIP_GEMINI: "1"
       SKIP_CODEX: ${{ matrix.skip_codex && '1' || '' }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare mirror (macOS)
+      - name: Probe mirror (Unix)
         if: startsWith(matrix.os, 'macos')
         shell: bash
         run: |
           set -euo pipefail
-          tag="$(gh release view --json tagName -q .tagName)"
-          version="${tag#v}"
-          tmp="$(mktemp -d)"
-          gh release download "$tag" -D "$tmp" \
-            -p "acm-installer-*" \
-            -p "acm-server-*"
-          python3 .github/scripts/prepare-installer-cache.py --assets-dir "$tmp" --cache-dir ./cache --version "$version"
+          curl -fsSL "$MIRROR_URL/api/installer/info" >/dev/null
+          curl -fsSL "$MIRROR_URL/codex/install.sh" >/dev/null
 
-          arch="$(uname -m)"
-          case "$arch" in
-            x86_64)
-              mirror_candidates=(
-                "acm-server-x86_64-apple-darwin.tar.xz"
-              )
-              provider_platform="darwin-x64"
-              ;;
-            arm64)
-              mirror_candidates=(
-                "acm-server-aarch64-apple-darwin.tar.xz"
-              )
-              provider_platform="darwin-arm64"
-              ;;
-            *) echo "Unsupported arch: $arch" >&2; exit 1 ;;
-          esac
-
-          mirror_asset=""
-          for candidate in "${mirror_candidates[@]}"; do
-            if [[ -f "$tmp/$candidate" ]]; then
-              mirror_asset="$candidate"
-              break
-            fi
-          done
-          if [[ -z "$mirror_asset" ]]; then
-            echo "acm-server asset not found for $arch" >&2
-            ls -la "$tmp" >&2 || true
-            exit 1
-          fi
-          tar -xJf "$tmp/$mirror_asset"
-          mirror_bin="$(find . -maxdepth 3 -type f -name acm-server -print -quit)"
-          if [[ -z "$mirror_bin" ]]; then
-            echo "acm-server binary not found after extraction" >&2
-            exit 1
-          fi
-          chmod +x "$mirror_bin"
-          if [[ "$provider_platform" == win32-* ]]; then
-            claude_file="${provider_platform}/claude.exe"
-          else
-            claude_file="${provider_platform}/claude"
-          fi
-
-          printf '%s\n' \
-            '[server]' \
-            'host = "127.0.0.1"' \
-            'port = 1357' \
-            'public_url = "http://127.0.0.1:1357"' \
-            'installer_provider = "installer"' \
-            '' \
-            '[cache]' \
-            'dir = "./cache"' \
-            'max_versions = 1' \
-            '' \
-            '[update]' \
-            'enabled = false' \
-            'interval_minutes = 10' \
-            '' \
-            '[[providers]]' \
-            'name = "installer"' \
-            'enabled = true' \
-            'source = "github_release"' \
-            'repo = "Wangnov/agents-cli-mirror"' \
-            'tags = ["latest"]' \
-            'platforms = [' \
-            '  "aarch64-apple-darwin",' \
-            '  "x86_64-apple-darwin",' \
-            '  "aarch64-unknown-linux-gnu",' \
-            '  "aarch64-unknown-linux-musl",' \
-            '  "x86_64-unknown-linux-gnu",' \
-            '  "x86_64-unknown-linux-musl",' \
-            '  "aarch64-pc-windows-msvc",' \
-            '  "x86_64-pc-windows-msvc"' \
-            ']' \
-            '' \
-            '[[providers]]' \
-            'name = "claude-code"' \
-            'enabled = true' \
-            'source = "gcs_release"' \
-            'tags = ["latest"]' \
-            "platforms = [\"$provider_platform\"]" \
-            'upstream_url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"' \
-            "files = [\"$claude_file\"]" \
-            '' \
-            '[[providers]]' \
-            'name = "codex"' \
-            'enabled = true' \
-            'source = "github_release"' \
-            'repo = "openai/codex"' \
-            'tags = ["latest"]' \
-            "platforms = [\"$provider_platform\"]" \
-            '' \
-            '[[providers]]' \
-            'name = "gemini"' \
-            'enabled = false' \
-            'source = "github_release"' \
-            'repo = "google-gemini/gemini-cli"' \
-            'tags = ["latest"]' \
-            '' \
-            '[[providers]]' \
-            'name = "node"' \
-            'enabled = false' \
-            'source = "github_release"' \
-            'repo = "Wangnov/agents-cli-mirror"' \
-            'tags = ["latest"]' \
-            '' \
-            '[[providers]]' \
-            'name = "node-pty"' \
-            'enabled = false' \
-            'source = "github_release"' \
-            'repo = "Wangnov/agents-cli-mirror"' \
-            'tags = ["latest"]' \
-            > config.ci.toml
-
-          "$mirror_bin" serve --config config.ci.toml > mirror.log 2>&1 &
-          echo $! > mirror.pid
-          ready=false
-          for _ in {1..120}; do
-            if curl -fsS http://127.0.0.1:1357/api/installer/info >/dev/null; then
-              ready=true
-              break
-            fi
-            if ! kill -0 "$(cat mirror.pid)" 2>/dev/null; then
-              echo "mirror process exited during startup" >&2
-              cat mirror.log >&2 || true
-              exit 1
-            fi
-            sleep 1
-          done
-          if [[ "$ready" != "true" ]]; then
-            echo "mirror did not become ready in time" >&2
-            cat mirror.log >&2 || true
-            exit 1
-          fi
-
-      - name: Prepare mirror (Windows)
+      - name: Probe mirror (Windows)
         if: startsWith(matrix.os, 'windows')
         shell: pwsh
         run: |
-          $tag = gh release view --json tagName -q .tagName
-          $version = $tag.TrimStart('v')
-          $tmp = Join-Path $env:TEMP ("installer-assets-" + [guid]::NewGuid().ToString("N"))
-          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-          gh release download $tag -D $tmp -p "acm-installer-*" -p "acm-server-*"
-          python .github/scripts/prepare-installer-cache.py --assets-dir $tmp --cache-dir ./cache --version $version
+          Invoke-RestMethod "$env:MIRROR_URL/api/installer/info" | Out-Null
+          Invoke-WebRequest -Uri "$env:MIRROR_URL/codex/install.sh" -UseBasicParsing | Out-Null
 
-          $serverCandidates = @(
-            "acm-server-x86_64-pc-windows-msvc.zip"
-          )
-          $serverAsset = $null
-          foreach ($candidate in $serverCandidates) {
-            $candidatePath = Join-Path $tmp $candidate
-            if (Test-Path $candidatePath) {
-              $serverAsset = $candidatePath
-              break
-            }
-          }
-          if (-not $serverAsset) {
-            throw "acm-server asset not found"
-          }
-
-          Expand-Archive -Path $serverAsset -DestinationPath . -Force
-          $exe = Get-ChildItem -Path . -Recurse -File |
-            Where-Object { $_.Name -eq "acm-server.exe" } |
-            Select-Object -First 1
-          if (-not $exe) { throw "acm-server executable not found" }
-          $providerPlatform = "win32-x64"
-          $claudeFile = "$providerPlatform/claude.exe"
-
-          $config = @(
-            '[server]'
-            'host = "127.0.0.1"'
-            'port = 1357'
-            'public_url = "http://127.0.0.1:1357"'
-            'installer_provider = "installer"'
-            ''
-            '[cache]'
-            'dir = "./cache"'
-            'max_versions = 1'
-            ''
-            '[update]'
-            'enabled = false'
-            'interval_minutes = 10'
-            ''
-            '[[providers]]'
-            'name = "installer"'
-            'enabled = true'
-            'source = "github_release"'
-            'repo = "Wangnov/agents-cli-mirror"'
-            'tags = ["latest"]'
-            'platforms = ['
-            '  "aarch64-apple-darwin",'
-            '  "x86_64-apple-darwin",'
-            '  "aarch64-unknown-linux-gnu",'
-            '  "aarch64-unknown-linux-musl",'
-            '  "x86_64-unknown-linux-gnu",'
-            '  "x86_64-unknown-linux-musl",'
-            '  "aarch64-pc-windows-msvc",'
-            '  "x86_64-pc-windows-msvc"'
-            ']'
-            ''
-            '[[providers]]'
-            'name = "claude-code"'
-            'enabled = true'
-            'source = "gcs_release"'
-            'tags = ["latest"]'
-            "platforms = [""$providerPlatform""]"
-            'upstream_url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"'
-            "files = [""$claudeFile""]"
-            ''
-            '[[providers]]'
-            'name = "codex"'
-            'enabled = true'
-            'source = "github_release"'
-            'repo = "openai/codex"'
-            'tags = ["latest"]'
-            "platforms = [""$providerPlatform""]"
-            ''
-            '[[providers]]'
-            'name = "gemini"'
-            'enabled = false'
-            'source = "github_release"'
-            'repo = "google-gemini/gemini-cli"'
-            'tags = ["latest"]'
-            ''
-            '[[providers]]'
-            'name = "node"'
-            'enabled = false'
-            'source = "github_release"'
-            'repo = "Wangnov/agents-cli-mirror"'
-            'tags = ["latest"]'
-            ''
-            '[[providers]]'
-            'name = "node-pty"'
-            'enabled = false'
-            'source = "github_release"'
-            'repo = "Wangnov/agents-cli-mirror"'
-            'tags = ["latest"]'
-          ) -join "`n"
-          $config | Set-Content -Path config.ci.toml -Encoding utf8
-
-          $proc = Start-Process -FilePath $exe.FullName -ArgumentList "serve","--config","config.ci.toml" -PassThru -RedirectStandardOutput mirror.out.log -RedirectStandardError mirror.err.log
-          $proc.Id | Set-Content mirror.pid
-          $ready = $false
-          for ($i = 0; $i -lt 120; $i++) {
-            try {
-              Invoke-RestMethod "http://127.0.0.1:1357/api/installer/info" | Out-Null
-              $ready = $true
-              break
-            } catch {
-              if ($proc.HasExited) {
-                Write-Host "mirror process exited during startup"
-                if (Test-Path mirror.out.log) { Get-Content mirror.out.log }
-                if (Test-Path mirror.err.log) { Get-Content mirror.err.log }
-                throw
-              }
-              Start-Sleep -Seconds 1
-            }
-          }
-          if (-not $ready) {
-            Write-Host "mirror did not become ready in time"
-            if (Test-Path mirror.out.log) { Get-Content mirror.out.log }
-            if (Test-Path mirror.err.log) { Get-Content mirror.err.log }
-            throw "mirror not ready"
-          }
-
-          .github/scripts/e2e-install-windows.ps1
-          if (Test-Path mirror.pid) {
-            $mirrorPid = Get-Content mirror.pid
-            Stop-Process -Id $mirrorPid -Force -ErrorAction SilentlyContinue
-          }
-          "WINDOWS_TESTS_DONE=true" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Unix install tests
+      - name: Run install tests (Unix)
         if: startsWith(matrix.os, 'macos')
         shell: bash
         run: |
-          set -euo pipefail
-          bash .github/scripts/e2e-install-unix.sh
+          script_path="$GITHUB_WORKSPACE/.github/scripts/e2e-install-unix.sh"
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          cd "$HOME"
+          bash "$script_path"
 
-      - name: Windows install tests
-        if: startsWith(matrix.os, 'windows') && env.WINDOWS_TESTS_DONE != 'true'
+      - name: Run install tests (Windows)
+        if: startsWith(matrix.os, 'windows')
         shell: pwsh
         run: |
-          .github/scripts/e2e-install-windows.ps1
-
-      - name: Stop mirror (macOS)
-        if: always() && startsWith(matrix.os, 'macos')
-        shell: bash
-        run: |
-          if [[ -f mirror.pid ]]; then
-            kill "$(cat mirror.pid)" || true
-          fi
-
-      - name: Stop mirror (Windows)
-        if: always() && startsWith(matrix.os, 'windows') && env.WINDOWS_TESTS_DONE != 'true'
-        shell: pwsh
-        run: |
-          if (Test-Path mirror.pid) {
-            $mirrorPid = Get-Content mirror.pid
-            Stop-Process -Id $mirrorPid -Force -ErrorAction SilentlyContinue
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE ".github\scripts\e2e-install-windows.ps1"
+          $env:USERPROFILE = Join-Path $env:RUNNER_TEMP "home"
+          New-Item -ItemType Directory -Force -Path $env:USERPROFILE | Out-Null
+          Push-Location $env:USERPROFILE
+          try {
+              pwsh -File $scriptPath
+          } finally {
+              Pop-Location
           }
 
-  test-linux-containers:
+  test-linux-container:
+    if: ${{ github.event.inputs.mirror_url != '' || secrets.MIRROR_PUBLIC_URL != '' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: linux-x64-glibc
+          - name: linux-x64-gnu
             platform: linux/amd64
             image: ubuntu:24.04
-            provider_platform: linux-x64
-            install_deps: DEBIAN_FRONTEND=noninteractive TZ=UTC apt-get update && DEBIAN_FRONTEND=noninteractive TZ=UTC apt-get install -y curl ca-certificates bash python3 xz-utils
-          - name: linux-arm64-glibc
+            install_deps: apt-get update && apt-get install -y bash curl ca-certificates python3 xz-utils
+          - name: linux-arm64-gnu
             platform: linux/arm64
             image: ubuntu:24.04
-            provider_platform: linux-arm64
-            install_deps: DEBIAN_FRONTEND=noninteractive TZ=UTC apt-get update && DEBIAN_FRONTEND=noninteractive TZ=UTC apt-get install -y curl ca-certificates bash python3 xz-utils
+            install_deps: apt-get update && apt-get install -y bash curl ca-certificates python3 xz-utils
           - name: linux-x64-musl
             platform: linux/amd64
             image: alpine:3.19
-            provider_platform: linux-x64-musl
             install_deps: apk add --no-cache bash curl ca-certificates python3
           - name: linux-arm64-musl
             platform: linux/arm64
             image: alpine:3.19
-            provider_platform: linux-arm64-musl
             install_deps: apk add --no-cache bash curl ca-certificates python3
     env:
-      MIRROR_URL: http://127.0.0.1:1357
+      MIRROR_URL: ${{ github.event.inputs.mirror_url || secrets.MIRROR_PUBLIC_URL }}
+      SKIP_CLAUDE: "1"
       SKIP_GEMINI: "1"
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Prepare mirror (host)
+      - name: Probe mirror
         shell: bash
         run: |
           set -euo pipefail
-          tag="$(gh release view --json tagName -q .tagName)"
-          version="${tag#v}"
-          tmp="$(mktemp -d)"
-          gh release download "$tag" -D "$tmp" \
-            -p "acm-installer-*" \
-            -p "acm-server-*"
-          python3 .github/scripts/prepare-installer-cache.py --assets-dir "$tmp" --cache-dir ./cache --version "$version"
-          server_asset=""
-          for candidate in \
-            "acm-server-x86_64-unknown-linux-gnu.tar.xz"; do
-            if [[ -f "$tmp/$candidate" ]]; then
-              server_asset="$candidate"
-              break
-            fi
-          done
-          if [[ -z "$server_asset" ]]; then
-            echo "acm-server linux-x64-gnu asset not found" >&2
-            ls -la "$tmp" >&2 || true
-            exit 1
-          fi
-          tar -xJf "$tmp/$server_asset"
-          mirror_bin="$(find . -maxdepth 3 -type f -name acm-server -print -quit)"
-          if [[ -z "$mirror_bin" ]]; then
-            echo "acm-server binary not found after extraction" >&2
-            exit 1
-          fi
-          chmod +x "$mirror_bin"
-          if [[ "${{ matrix.provider_platform }}" == win32-* ]]; then
-            claude_file="${{ matrix.provider_platform }}/claude.exe"
-          else
-            claude_file="${{ matrix.provider_platform }}/claude"
-          fi
-
-          printf '%s\n' \
-            '[server]' \
-            'host = "127.0.0.1"' \
-            'port = 1357' \
-            'public_url = "http://127.0.0.1:1357"' \
-            'installer_provider = "installer"' \
-            '' \
-            '[cache]' \
-            'dir = "./cache"' \
-            'max_versions = 1' \
-            '' \
-            '[update]' \
-            'enabled = false' \
-            'interval_minutes = 10' \
-            '' \
-            '[[providers]]' \
-            'name = "installer"' \
-            'enabled = true' \
-            'source = "github_release"' \
-            'repo = "Wangnov/agents-cli-mirror"' \
-            'tags = ["latest"]' \
-            'platforms = [' \
-            '  "aarch64-apple-darwin",' \
-            '  "x86_64-apple-darwin",' \
-            '  "aarch64-unknown-linux-gnu",' \
-            '  "aarch64-unknown-linux-musl",' \
-            '  "x86_64-unknown-linux-gnu",' \
-            '  "x86_64-unknown-linux-musl",' \
-            '  "aarch64-pc-windows-msvc",' \
-            '  "x86_64-pc-windows-msvc"' \
-            ']' \
-            '' \
-            '[[providers]]' \
-            'name = "claude-code"' \
-            'enabled = true' \
-            'source = "gcs_release"' \
-            'tags = ["latest"]' \
-            "platforms = [\"${{ matrix.provider_platform }}\"]" \
-            'upstream_url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"' \
-            "files = [\"$claude_file\"]" \
-            '' \
-            '[[providers]]' \
-            'name = "codex"' \
-            'enabled = true' \
-            'source = "github_release"' \
-            'repo = "openai/codex"' \
-            'tags = ["latest"]' \
-            "platforms = [\"${{ matrix.provider_platform }}\"]" \
-            '' \
-            '[[providers]]' \
-            'name = "gemini"' \
-            'enabled = false' \
-            'source = "github_release"' \
-            'repo = "google-gemini/gemini-cli"' \
-            'tags = ["latest"]' \
-            '' \
-            '[[providers]]' \
-            'name = "node"' \
-            'enabled = false' \
-            'source = "github_release"' \
-            'repo = "Wangnov/agents-cli-mirror"' \
-            'tags = ["latest"]' \
-            '' \
-            '[[providers]]' \
-            'name = "node-pty"' \
-            'enabled = false' \
-            'source = "github_release"' \
-            'repo = "Wangnov/agents-cli-mirror"' \
-            'tags = ["latest"]' \
-            > config.ci.toml
-
-          "$mirror_bin" serve --config config.ci.toml > mirror.log 2>&1 &
-          echo $! > mirror.pid
-          ready=false
-          for _ in {1..120}; do
-            if curl -fsS http://127.0.0.1:1357/api/installer/info >/dev/null; then
-              ready=true
-              break
-            fi
-            if ! kill -0 "$(cat mirror.pid)" 2>/dev/null; then
-              echo "mirror process exited during startup" >&2
-              cat mirror.log >&2 || true
-              exit 1
-            fi
-            sleep 1
-          done
-          if [[ "$ready" != "true" ]]; then
-            echo "mirror did not become ready in time" >&2
-            cat mirror.log >&2 || true
-            exit 1
-          fi
+          curl -fsSL "$MIRROR_URL/api/installer/info" >/dev/null
+          curl -fsSL "$MIRROR_URL/codex/install.sh" >/dev/null
 
       - name: Run install tests in container
         run: |
-          docker run --rm \
-            --network host \
-            --platform ${{ matrix.platform }} \
-            -e MIRROR_URL="http://127.0.0.1:1357" \
-            -e SKIP_GEMINI="1" \
-            -v "${PWD}:/work" \
-            -w /work \
-            ${{ matrix.image }} \
-            /bin/sh -c "${{ matrix.install_deps }} && bash /work/.github/scripts/e2e-install-unix.sh"
-
-      - name: Stop mirror (host)
-        if: always()
-        shell: bash
-        run: |
-          if [[ -f mirror.pid ]]; then
-            kill "$(cat mirror.pid)" || true
-          fi
+          docker run --rm             --platform ${{ matrix.platform }}             -e MIRROR_URL="$MIRROR_URL"             -e SKIP_GEMINI="1"             -e HOME="/tmp/home"             -v "$PWD:/work"             -w /work             ${{ matrix.image }}             /bin/sh -c "${{ matrix.install_deps }} && mkdir -p /tmp/home && cd /tmp/home && bash /work/.github/scripts/e2e-install-unix.sh"

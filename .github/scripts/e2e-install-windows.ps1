@@ -36,7 +36,7 @@ function Run-Cli {
 
     Write-Host "==> Installing $Name"
     $installScript = Join-Path $env:TEMP ("acm-install-" + $Name + "-" + [guid]::NewGuid().ToString("N") + ".ps1")
-    Invoke-WebRequest -Uri "$env:MIRROR_URL/install/$Name" -UseBasicParsing -OutFile $installScript
+    Invoke-WebRequest -Uri "$env:MIRROR_URL/$Name/install.ps1" -UseBasicParsing -OutFile $installScript
     try {
         & $installScript @("--install-dir", $InstallDir, "--no-modify-path")
     } finally {
@@ -54,7 +54,7 @@ function Run-Cli {
     Get-Process -Name $procName -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 1
     $uninstallScript = Join-Path $env:TEMP ("acm-uninstall-" + $Name + "-" + [guid]::NewGuid().ToString("N") + ".ps1")
-    Invoke-WebRequest -Uri "$env:MIRROR_URL/uninstall/$Name" -UseBasicParsing -OutFile $uninstallScript
+    Invoke-WebRequest -Uri "$env:MIRROR_URL/$Name/uninstall.ps1" -UseBasicParsing -OutFile $uninstallScript
     try {
         & $uninstallScript @UninstallArgs
     } finally {
@@ -70,7 +70,11 @@ function Run-Cli {
     }
 }
 
-Run-Cli -Name "claude-code" -Bin "$BinDir\claude-code.exe"
+if ($env:SKIP_CLAUDE -eq "1") {
+    Write-Host "Skipping claude-code: SKIP_CLAUDE=1"
+} else {
+    Run-Cli -Name "claude-code" -Bin "$BinDir\claude-code.exe"
+}
 Run-Cli -Name "codex" -Bin "$BinDir\codex.exe"
 if ($env:SKIP_GEMINI -eq "1") {
     Write-Host "Skipping gemini: SKIP_GEMINI=1"

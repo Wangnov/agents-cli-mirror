@@ -15,10 +15,22 @@ pub(super) fn build_router(state: Arc<AppState>) -> Router {
         // Bootstrap script routes (content-negotiation + UA fallback)
         .route("/install/{provider}", get(super::script_install))
         .route("/{provider}/install.sh", get(super::script_install_sh))
+        .route("/{provider}/install.ps1", get(super::script_install_ps1))
         .route("/update/{provider}", get(super::script_update))
+        .route("/{provider}/update.sh", get(super::script_update_sh))
+        .route("/{provider}/update.ps1", get(super::script_update_ps1))
         .route("/uninstall/{provider}", get(super::script_uninstall))
+        .route("/{provider}/uninstall.sh", get(super::script_uninstall_sh))
+        .route(
+            "/{provider}/uninstall.ps1",
+            get(super::script_uninstall_ps1),
+        )
         .route("/status", get(super::script_status))
+        .route("/status.sh", get(super::script_status_sh))
+        .route("/status.ps1", get(super::script_status_ps1))
         .route("/doctor", get(super::script_doctor))
+        .route("/doctor.sh", get(super::script_doctor_sh))
+        .route("/doctor.ps1", get(super::script_doctor_ps1))
         // Generic artifact file route
         .route(
             "/{provider}/{version}/files/{*filepath}",

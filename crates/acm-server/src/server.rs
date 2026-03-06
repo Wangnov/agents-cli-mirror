@@ -182,6 +182,19 @@ async fn script_install_sh(
     .await
 }
 
+async fn script_install_ps1(
+    State(state): State<Arc<AppState>>,
+    Path(provider): Path<String>,
+) -> Response {
+    fixed_command_script(
+        state,
+        Some(provider),
+        scripts::ScriptCommand::Install,
+        scripts::ScriptFlavor::Ps1,
+    )
+    .await
+}
+
 async fn script_update(
     State(state): State<Arc<AppState>>,
     Path(provider): Path<String>,
@@ -192,6 +205,32 @@ async fn script_update(
         Some(provider),
         scripts::ScriptCommand::Update,
         headers,
+    )
+    .await
+}
+
+async fn script_update_sh(
+    State(state): State<Arc<AppState>>,
+    Path(provider): Path<String>,
+) -> Response {
+    fixed_command_script(
+        state,
+        Some(provider),
+        scripts::ScriptCommand::Update,
+        scripts::ScriptFlavor::Sh,
+    )
+    .await
+}
+
+async fn script_update_ps1(
+    State(state): State<Arc<AppState>>,
+    Path(provider): Path<String>,
+) -> Response {
+    fixed_command_script(
+        state,
+        Some(provider),
+        scripts::ScriptCommand::Update,
+        scripts::ScriptFlavor::Ps1,
     )
     .await
 }
@@ -210,12 +249,78 @@ async fn script_uninstall(
     .await
 }
 
+async fn script_uninstall_sh(
+    State(state): State<Arc<AppState>>,
+    Path(provider): Path<String>,
+) -> Response {
+    fixed_command_script(
+        state,
+        Some(provider),
+        scripts::ScriptCommand::Uninstall,
+        scripts::ScriptFlavor::Sh,
+    )
+    .await
+}
+
+async fn script_uninstall_ps1(
+    State(state): State<Arc<AppState>>,
+    Path(provider): Path<String>,
+) -> Response {
+    fixed_command_script(
+        state,
+        Some(provider),
+        scripts::ScriptCommand::Uninstall,
+        scripts::ScriptFlavor::Ps1,
+    )
+    .await
+}
+
 async fn script_status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     command_script(state, None, scripts::ScriptCommand::Status, headers).await
 }
 
+async fn script_status_sh(State(state): State<Arc<AppState>>) -> Response {
+    fixed_command_script(
+        state,
+        None,
+        scripts::ScriptCommand::Status,
+        scripts::ScriptFlavor::Sh,
+    )
+    .await
+}
+
+async fn script_status_ps1(State(state): State<Arc<AppState>>) -> Response {
+    fixed_command_script(
+        state,
+        None,
+        scripts::ScriptCommand::Status,
+        scripts::ScriptFlavor::Ps1,
+    )
+    .await
+}
+
 async fn script_doctor(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     command_script(state, None, scripts::ScriptCommand::Doctor, headers).await
+}
+
+async fn script_doctor_sh(State(state): State<Arc<AppState>>) -> Response {
+    fixed_command_script(
+        state,
+        None,
+        scripts::ScriptCommand::Doctor,
+        scripts::ScriptFlavor::Sh,
+    )
+    .await
+}
+
+async fn script_doctor_ps1(State(state): State<Arc<AppState>>) -> Response {
+    fixed_command_script(
+        state,
+        None,
+        scripts::ScriptCommand::Doctor,
+        scripts::ScriptFlavor::Ps1,
+    )
+    .await
 }
 
 async fn command_script(
