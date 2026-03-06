@@ -122,4 +122,4 @@ jobs:
 
       - name: Run install tests in container
         run: |
-          docker run --rm             --platform ${{ matrix.platform }}             -e MIRROR_URL="$MIRROR_URL"             -e SKIP_GEMINI="1"             -e HOME="/tmp/home"             -v "$PWD:/work"             -w /work             ${{ matrix.image }}             /bin/sh -c "${{ matrix.install_deps }} && mkdir -p /tmp/home && cd /tmp/home && bash /work/.github/scripts/e2e-install-unix.sh"
+          docker run --rm             --platform ${{ matrix.platform }}             -e MIRROR_URL="$MIRROR_URL"             -e SKIP_CLAUDE="$SKIP_CLAUDE"             -e SKIP_GEMINI="$SKIP_GEMINI"             -e HOME="/tmp/home"             -v "$PWD:/work"             -w /work             ${{ matrix.image }}             /bin/sh -c "${{ matrix.install_deps }} && mkdir -p /tmp/home && cd /tmp/home && bash /work/.github/scripts/e2e-install-unix.sh"
