@@ -338,7 +338,7 @@ if [[ -z "$INSTALLER_VERSION" ]]; then
 fi
 
 CHECKSUMS_JSON="$(curl -fsSL "$MIRROR_URL/api/$INSTALLER_PROVIDER/checksums")"
-readarray -t INSTALLER_META < <("$PYTHON" - "$CHECKSUMS_JSON" "$INSTALLER_VERSION" "$PLATFORM" <<'PY'
+INSTALLER_META_RAW="$("$PYTHON" - "$CHECKSUMS_JSON" "$INSTALLER_VERSION" "$PLATFORM" <<'PY'
 import json, sys
 checksums = json.loads(sys.argv[1])
 version = sys.argv[2]
@@ -363,10 +363,20 @@ if not filename or not sha256:
 print(filename)
 print(sha256)
 PY
-)
+)"
 
-INSTALLER_FILE="${{INSTALLER_META[0]:-}}"
-EXPECTED_SHA256="${{INSTALLER_META[1]:-}}"
+INSTALLER_FILE=""
+EXPECTED_SHA256=""
+INSTALLER_META_INDEX=0
+while IFS= read -r meta_line; do
+    INSTALLER_META_INDEX=$((INSTALLER_META_INDEX + 1))
+    case "$INSTALLER_META_INDEX" in
+        1) INSTALLER_FILE="$meta_line" ;;
+        2) EXPECTED_SHA256="$meta_line" ;;
+    esac
+done <<EOF
+$INSTALLER_META_RAW
+EOF
 if [[ -z "$INSTALLER_FILE" || -z "$EXPECTED_SHA256" ]]; then
     echo "failed to resolve installer metadata" >&2
     exit 1
@@ -573,7 +583,10 @@ try {{
 
 #[cfg(test)]
 mod tests {
-    use super::{ScriptFlavor, ScriptResolutionContext, resolve_script_variant};
+    use super::{
+        ScriptCommand, ScriptFlavor, ScriptResolutionContext, render_bootstrap_script,
+        resolve_script_variant,
+    };
 
     #[test]
     fn resolve_script_variant_prefers_accept_when_present() {
@@ -615,5 +628,22 @@ mod tests {
             provider: Some("tool-a"),
         });
         assert_eq!(flavor, ScriptFlavor::Sh);
+    }
+
+    #[test]
+    fn render_sh_script_avoids_readarray_for_portability() {
+        let script = render_bootstrap_script(
+            ScriptCommand::Install,
+            Some("tool-a"),
+            ScriptFlavor::Sh,
+            Some("https://mirror.example.com"),
+            "installer",
+            "acm-installer",
+        )
+        .expect("render shell bootstrap script");
+
+        assert!(!script.contains("readarray -t INSTALLER_META"));
+        assert!(script.contains("INSTALLER_META_RAW="));
+        assert!(script.contains("while IFS= read -r meta_line; do"));
     }
 }
