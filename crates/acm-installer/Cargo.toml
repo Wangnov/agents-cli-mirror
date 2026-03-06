@@ -8,6 +8,9 @@ license = "AGPL-3.0"
 repository = "https://github.com/wangnov/agents-cli-mirror"
 publish = false
 
+[package.metadata.dist]
+dist = true
+
 [[bin]]
 name = "acm-installer"
 path = "src/main.rs"
