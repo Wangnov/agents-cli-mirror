@@ -9,7 +9,7 @@ compatibility_date = "2026-03-04"
 
 [vars]
 # 触发哪个 GitHub Actions workflow
-GITHUB_OWNER = "wangnov"
+GITHUB_OWNER = "Wangnov"
 GITHUB_REPO = "agents-cli-mirror"
 GITHUB_WORKFLOW = "mirror-cloud-sync.yml"
 GITHUB_REF = "main"
@@ -17,7 +17,11 @@ GITHUB_REF = "main"
 # refresh 的节流窗口（秒）。设为 0 可关闭节流。
 THROTTLE_SECONDS = "30"
 
+# 推荐绑定一个 KV 命名空间做全局节流；如果不绑，会自动退回边缘缓存节流（best effort）。
+# [[kv_namespaces]]
+# binding = "REFRESH_THROTTLE"
+# id = "<your-kv-namespace-id>"
+
 # Secrets（不要写进仓库）：
 # - REFRESH_TOKEN: Bearer token（客户端 POST /api/{provider}/refresh 使用）
 # - GITHUB_TOKEN: GitHub PAT（需要 actions:write 权限触发 workflow_dispatch）
-

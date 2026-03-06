@@ -6,6 +6,7 @@ interface Env {
   GITHUB_WORKFLOW: string;
   GITHUB_REF?: string;
   THROTTLE_SECONDS?: string;
+  REFRESH_THROTTLE?: KVNamespace;
 }
 
 const PROVIDER_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -33,7 +34,25 @@ function requireBearer(request: Request, expected: string | undefined): Response
   return undefined;
 }
 
-async function throttle(provider: string, seconds: number): Promise<Response | undefined> {
+async function throttleWithKv(
+  namespace: KVNamespace,
+  provider: string,
+  seconds: number,
+): Promise<Response | undefined> {
+  const key = `refresh:${provider}`;
+  const existing = await namespace.get(key);
+  if (existing !== null) {
+    return json(
+      { success: false, error: "throttled", retry_after_seconds: seconds },
+      { status: 429 },
+    );
+  }
+
+  await namespace.put(key, String(Date.now()), { expirationTtl: seconds });
+  return undefined;
+}
+
+async function throttleWithCache(provider: string, seconds: number): Promise<Response | undefined> {
   if (!Number.isFinite(seconds) || seconds <= 0) {
     return undefined;
   }
@@ -51,8 +70,31 @@ async function throttle(provider: string, seconds: number): Promise<Response | u
     );
   }
 
-  await caches.default.put(cacheKey, new Response("1"), { expirationTtl: seconds });
+  await caches.default.put(
+    cacheKey,
+    new Response("1", {
+      headers: {
+        "cache-control": `max-age=${seconds}`,
+      },
+    }),
+  );
   return undefined;
+}
+
+async function throttle(
+  env: Env,
+  provider: string,
+  seconds: number,
+): Promise<Response | undefined> {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return undefined;
+  }
+
+  if (env.REFRESH_THROTTLE) {
+    return throttleWithKv(env.REFRESH_THROTTLE, provider, seconds);
+  }
+
+  return throttleWithCache(provider, seconds);
 }
 
 async function dispatchGithubWorkflow(env: Env, provider: string): Promise<Response> {
@@ -123,7 +165,7 @@ export default {
     }
 
     const throttleSeconds = Number.parseInt(env.THROTTLE_SECONDS || "30", 10);
-    const throttled = await throttle(provider, throttleSeconds);
+    const throttled = await throttle(env, provider, throttleSeconds);
     if (throttled) {
       return throttled;
     }
@@ -131,4 +173,3 @@ export default {
     return dispatchGithubWorkflow(env, provider);
   },
 };
-

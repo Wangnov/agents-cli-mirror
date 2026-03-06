@@ -45,7 +45,7 @@ jobs:
           MIRROR_S3_BUCKET: ${{ secrets.MIRROR_S3_BUCKET }}
           MIRROR_S3_ACCESS_KEY_ID: ${{ secrets.MIRROR_S3_ACCESS_KEY_ID }}
           MIRROR_S3_SECRET_ACCESS_KEY: ${{ secrets.MIRROR_S3_SECRET_ACCESS_KEY }}
-          MIRROR_S3_REGION: ${{ secrets.MIRROR_S3_REGION }}
+          MIRROR_S3_REGION: ${{ secrets.MIRROR_S3_REGION || 'auto' }}
           MIRROR_S3_PREFIX: ${{ secrets.MIRROR_S3_PREFIX }}
         run: |
           PROVIDER="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.provider || 'all' }}"
@@ -63,7 +63,7 @@ jobs:
           MIRROR_S3_BUCKET: ${{ secrets.MIRROR_S3_BUCKET }}
           MIRROR_S3_ACCESS_KEY_ID: ${{ secrets.MIRROR_S3_ACCESS_KEY_ID }}
           MIRROR_S3_SECRET_ACCESS_KEY: ${{ secrets.MIRROR_S3_SECRET_ACCESS_KEY }}
-          MIRROR_S3_REGION: ${{ secrets.MIRROR_S3_REGION }}
+          MIRROR_S3_REGION: ${{ secrets.MIRROR_S3_REGION || 'auto' }}
           MIRROR_S3_PREFIX: ${{ secrets.MIRROR_S3_PREFIX }}
         run: |
           target/release/acm-server publish --config config.cloud.toml --provider "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.provider || 'all' }}"
