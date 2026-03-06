@@ -156,7 +156,7 @@ cargo run --release --bin acm-server -- publish --config config.cloud.toml --pro
 构建形态：
 
 - `acm`（lite，默认）：不包含 `s3` 支持
-- `acm-full`（开启 `s3` feature）：用于需要 `storage.mode = "s3"` 的场景
+- `acm-full`（二进制名 `acm-full`，开启 `s3` feature）：用于需要 `storage.mode = "s3"` 的场景
 
 本地构建示例：
 
@@ -164,7 +164,7 @@ cargo run --release --bin acm-server -- publish --config config.cloud.toml --pro
 # lite
 cargo build -p acm --release
 
-# full (s3)
+# full (s3, outputs `target/release/acm-full`)
 cargo build -p acm-full --release
 ```
 

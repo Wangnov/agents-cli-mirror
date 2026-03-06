@@ -12,7 +12,7 @@ publish = false
 dist = true
 
 [[bin]]
-name = "acm"
+name = "acm-full"
 path = "src/main.rs"
 
 [dependencies]
