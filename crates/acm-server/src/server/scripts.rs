@@ -430,7 +430,9 @@ chmod +x "$TMP_BIN" 2>/dev/null || true
 
 COMMAND_ARGS=("--mirror-url" "$MIRROR_URL" "{command}")
 {provider_line}
-COMMAND_ARGS+=("${{FORWARD_ARGS[@]}}")
+if [[ ${{#FORWARD_ARGS[@]}} -gt 0 ]]; then
+    COMMAND_ARGS+=("${{FORWARD_ARGS[@]}}")
+fi
 
 exec "$TMP_BIN" "${{COMMAND_ARGS[@]}}"
 "#,
@@ -721,5 +723,21 @@ mod tests {
         assert!(!script.contains("${EXPECTED_SHA256,,}"));
         assert!(script.contains("normalize_lower()"));
         assert!(script.contains("tr '[:upper:]' '[:lower:]'"));
+    }
+
+    #[test]
+    fn render_sh_script_guards_empty_forward_args_under_nounset() {
+        let script = render_bootstrap_script(
+            ScriptCommand::Install,
+            Some("tool-a"),
+            ScriptFlavor::Sh,
+            Some("https://mirror.example.com"),
+            "installer",
+            "acm-installer",
+        )
+        .expect("render shell bootstrap script");
+
+        assert!(!script.contains("COMMAND_ARGS+=(\\\"\\${FORWARD_ARGS[@]}\\\")"));
+        assert!(script.contains("if [[ ${#FORWARD_ARGS[@]} -gt 0 ]]; then"));
     }
 }
