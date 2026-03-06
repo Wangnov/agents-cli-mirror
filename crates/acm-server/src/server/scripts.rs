@@ -338,11 +338,12 @@ if [[ -z "$INSTALLER_VERSION" ]]; then
 fi
 
 CHECKSUMS_JSON="$(curl -fsSL "$MIRROR_URL/api/$INSTALLER_PROVIDER/checksums")"
-INSTALLER_META_RAW="$("$PYTHON" - "$CHECKSUMS_JSON" "$INSTALLER_VERSION" "$PLATFORM" <<'PY'
+INSTALLER_META_RAW="$("$PYTHON" - "$CHECKSUMS_JSON" "$INSTALLER_VERSION" "$PLATFORM" "$BIN_NAME" <<'PY'
 import json, sys
 checksums = json.loads(sys.argv[1])
 version = sys.argv[2]
 platform = sys.argv[3]
+bin_name = sys.argv[4]
 versions = checksums.get(version)
 if not isinstance(versions, dict):
     raise SystemExit('installer version not found in checksums')
@@ -353,7 +354,17 @@ if not isinstance(entry, dict):
     raise SystemExit('invalid checksum entry')
 files = entry.get('files')
 if isinstance(files, dict) and files:
-    filename = sorted(files.keys())[0]
+    candidates = sorted(files.keys())
+    filename = next(
+        (
+            name for name in candidates
+            if name == bin_name
+            or name == f"{{bin_name}}.exe"
+            or name.startswith(f"{{bin_name}}-")
+            or name.startswith(f"{{bin_name}}.")
+        ),
+        candidates[0],
+    )
     sha256 = files.get(filename, {{}}).get('sha256') or entry.get('sha256')
 else:
     filename = entry.get('filename')
@@ -510,7 +521,18 @@ if (-not $Entry) {{
 if (-not $Entry) {{ throw "no installer entry for platform" }}
 
 if ($Entry.files -and $Entry.files.PSObject.Properties.Count -gt 0) {{
-    $FileProp = $Entry.files.PSObject.Properties | Sort-Object Name | Select-Object -First 1
+    $FileProps = $Entry.files.PSObject.Properties | Sort-Object Name
+    $FileProp = $FileProps |
+        Where-Object {{
+            $_.Name -eq $InstallerBin -or
+            $_.Name -eq "$InstallerBin.exe" -or
+            $_.Name.StartsWith("$InstallerBin-") -or
+            $_.Name.StartsWith("$InstallerBin.")
+        }} |
+        Select-Object -First 1
+    if (-not $FileProp) {{
+        $FileProp = $FileProps | Select-Object -First 1
+    }}
     $InstallerFile = $FileProp.Name
     $ExpectedSha256 = $FileProp.Value.sha256
 }} else {{
@@ -645,5 +667,37 @@ mod tests {
         assert!(!script.contains("readarray -t INSTALLER_META"));
         assert!(script.contains("INSTALLER_META_RAW="));
         assert!(script.contains("while IFS= read -r meta_line; do"));
+    }
+
+    #[test]
+    fn render_sh_script_prefers_installer_named_asset() {
+        let script = render_bootstrap_script(
+            ScriptCommand::Install,
+            Some("tool-a"),
+            ScriptFlavor::Sh,
+            Some("https://mirror.example.com"),
+            "installer",
+            "acm-installer",
+        )
+        .expect("render shell bootstrap script");
+
+        assert!(script.contains("\"$INSTALLER_VERSION\" \"$PLATFORM\" \"$BIN_NAME\""));
+        assert!(script.contains("name.startswith(f\"{bin_name}-\")"));
+    }
+
+    #[test]
+    fn render_ps1_script_prefers_installer_named_asset() {
+        let script = render_bootstrap_script(
+            ScriptCommand::Install,
+            Some("tool-a"),
+            ScriptFlavor::Ps1,
+            Some("https://mirror.example.com"),
+            "installer",
+            "acm-installer",
+        )
+        .expect("render powershell bootstrap script");
+
+        assert!(script.contains("$_.Name -eq $InstallerBin"));
+        assert!(script.contains("$_.Name.StartsWith(\"$InstallerBin-\")"));
     }
 }
