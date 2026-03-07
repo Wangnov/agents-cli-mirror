@@ -80,13 +80,13 @@ run_cli() {
   curl -fsSL "$MIRROR_URL/install/$name" >/dev/null
   curl -fsSL "$MIRROR_URL/install/$name" | MIRROR_URL="$MIRROR_URL" bash -s -- --install-dir "$HOME/.agents" --no-modify-path
 
-  echo "==> Version check: $cmd"
-  "$bin_path" --version || "$bin_path" -V
-
   if [[ "$cmd" == "codex" ]]; then
     echo "==> Help check: $cmd"
     "$bin_path" --help >/dev/null
   else
+    echo "==> Version check: $cmd"
+    "$bin_path" --version || "$bin_path" -V
+
     echo "==> TUI check: $cmd"
     tui_check "$bin_path"
   fi

@@ -43,13 +43,13 @@ function Run-Cli {
         Remove-Item -Force -ErrorAction SilentlyContinue $installScript
     }
 
-    Write-Host "==> Version check: $Bin"
-    & $Bin --version
-
     if ($Name -eq "codex") {
         Write-Host "==> Help check: $Bin"
         & $Bin --help | Out-Null
     } else {
+        Write-Host "==> Version check: $Bin"
+        & $Bin --version
+
         Write-Host "==> TUI check: $Bin"
         Invoke-TuiCheck $Bin
     }
