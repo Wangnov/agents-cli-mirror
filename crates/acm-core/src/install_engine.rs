@@ -99,8 +99,7 @@ pub fn uninstall_provider(req: &UninstallRequest<'_>) -> Result<UninstallResult>
     let bin_path = bin_path_for_provider(req.install_dir, req.provider);
     let mut bin_removed = false;
     if fs::symlink_metadata(&bin_path).is_ok() {
-        let _ = fs::remove_file(&bin_path);
-        bin_removed = true;
+        bin_removed = remove_bin_with_retry(&bin_path)?;
     }
 
     Ok(UninstallResult {
@@ -108,6 +107,33 @@ pub fn uninstall_provider(req: &UninstallRequest<'_>) -> Result<UninstallResult>
         bin_removed,
         bin_path,
     })
+}
+
+fn remove_bin_with_retry(path: &Path) -> Result<bool> {
+    if fs::symlink_metadata(path).is_err() {
+        return Ok(false);
+    }
+
+    let attempts = if cfg!(windows) { 10 } else { 1 };
+    for attempt in 0..attempts {
+        match fs::remove_file(path) {
+            Ok(()) => return Ok(true),
+            Err(err) if attempt + 1 < attempts && cfg!(windows) => {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                if fs::symlink_metadata(path).is_err() {
+                    return Ok(true);
+                }
+                tracing::debug!(
+                    "retrying remove_file for {} after error: {}",
+                    path.display(),
+                    err
+                );
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    Ok(fs::symlink_metadata(path).is_err())
 }
 
 pub fn import_from_dir(req: &ImportRequest<'_>) -> Result<ImportResult> {
