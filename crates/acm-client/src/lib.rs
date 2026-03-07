@@ -290,11 +290,7 @@ fn run_with_args(global: GlobalArgs, command: CommandGroup) -> Result<()> {
     fs::create_dir_all(&install_dir)?;
     fs::create_dir_all(&cache_dir)?;
 
-    let state_path = global
-        .config
-        .parent()
-        .map(|dir| dir.join("state.toml"))
-        .unwrap_or_else(|| install_dir.join("state.toml"));
+    let state_path = resolve_state_path(&install_dir);
 
     let client = build_client(
         global.proxy.as_deref(),
@@ -681,6 +677,10 @@ fn resolve_install_and_bin_dirs_with_home(
     })
 }
 
+fn resolve_state_path(install_dir: &Path) -> PathBuf {
+    install_dir.join("state.toml")
+}
+
 fn dirs_home() -> Result<PathBuf> {
     if let Ok(home) = env::var("HOME") {
         return Ok(PathBuf::from(home));
@@ -911,5 +911,21 @@ mod tests {
 
         assert_eq!(install_dir, explicit);
         assert_eq!(bin_dir, home.join("custom-root").join("bin"));
+    }
+
+    #[test]
+    fn resolve_state_path_defaults_to_install_dir_state_toml() {
+        let install_dir = PathBuf::from("/tmp/test-home/.acm");
+        let state_path = resolve_state_path(&install_dir);
+
+        assert_eq!(state_path, install_dir.join("state.toml"));
+    }
+
+    #[test]
+    fn resolve_state_path_uses_explicit_install_dir_root() {
+        let install_dir = PathBuf::from("/tmp/test-home/custom-root");
+        let state_path = resolve_state_path(&install_dir);
+
+        assert_eq!(state_path, install_dir.join("state.toml"));
     }
 }
