@@ -9,9 +9,8 @@ use acm_core::config::{
     Config as LocalConfig, DynamicProviderConfig, ProviderUiPreset as SharedProviderUiPreset,
 };
 use acm_core::install_engine::{
-    InstallRequest, UninstallRequest, bin_dir as engine_bin_dir,
-    cache_path_for as engine_cache_path_for, install_from_archive as engine_install_from_archive,
-    uninstall_provider as engine_uninstall,
+    InstallRequest, UninstallRequest, cache_path_for as engine_cache_path_for,
+    install_from_archive as engine_install_from_archive, uninstall_provider as engine_uninstall,
 };
 use acm_server::importer::import_provider_version;
 use anyhow::{Context, Result, anyhow, bail};
@@ -206,6 +205,7 @@ struct ProviderInfoArgs {
 struct InstallContext {
     mirror_url: Option<String>,
     install_dir: PathBuf,
+    bin_dir: PathBuf,
     cache_dir: PathBuf,
     state_path: PathBuf,
     client: Client,
@@ -277,10 +277,11 @@ fn run_with_args(global: GlobalArgs, command: CommandGroup) -> Result<()> {
 
     let resolved_mirror = resolve_mirror_url(&global, &config);
 
-    let install_dir = match global.install_dir {
-        Some(path) => expand_tilde(path)?,
-        None => default_install_dir()?,
+    let explicit_install_dir = match global.install_dir {
+        Some(path) => Some(expand_tilde(path)?),
+        None => None,
     };
+    let (install_dir, bin_dir) = resolve_install_and_bin_dirs(explicit_install_dir)?;
     let cache_dir = match global.cache_dir {
         Some(path) => expand_tilde(path)?,
         None => install_dir.join("cache"),
@@ -305,6 +306,7 @@ fn run_with_args(global: GlobalArgs, command: CommandGroup) -> Result<()> {
     let ctx = InstallContext {
         mirror_url: resolved_mirror,
         install_dir,
+        bin_dir,
         cache_dir,
         state_path,
         client,
@@ -647,9 +649,36 @@ fn expand_tilde(path: PathBuf) -> Result<PathBuf> {
     Ok(home.join(rest))
 }
 
-fn default_install_dir() -> Result<PathBuf> {
+fn default_install_dir_from_home(home: &Path) -> PathBuf {
+    home.join(".acm")
+}
+
+fn default_bin_dir_from_home(home: &Path) -> PathBuf {
+    home.join(".agents").join("bin")
+}
+
+fn resolve_install_and_bin_dirs(
+    explicit_install_dir: Option<PathBuf>,
+) -> Result<(PathBuf, PathBuf)> {
     let home = dirs_home()?;
-    Ok(home.join(".acm"))
+    resolve_install_and_bin_dirs_with_home(explicit_install_dir, &home)
+}
+
+fn resolve_install_and_bin_dirs_with_home(
+    explicit_install_dir: Option<PathBuf>,
+    home: &Path,
+) -> Result<(PathBuf, PathBuf)> {
+    Ok(match explicit_install_dir {
+        Some(path) => {
+            let install_dir = path;
+            let bin_dir = install_dir.join("bin");
+            (install_dir, bin_dir)
+        }
+        None => (
+            default_install_dir_from_home(home),
+            default_bin_dir_from_home(home),
+        ),
+    })
 }
 
 fn dirs_home() -> Result<PathBuf> {
@@ -769,6 +798,7 @@ mod tests {
         let ctx = InstallContext {
             mirror_url: None,
             install_dir: install_dir.clone(),
+            bin_dir: install_dir.join("bin"),
             cache_dir: install_dir.join("cache"),
             state_path: temp_dir.path().join("state.toml"),
             client: build_client(None, false, 3, 30).expect("build client"),
@@ -859,5 +889,27 @@ mod tests {
         config.server.public_url = None;
         let mirror = resolve_mirror_url_with_env(&placeholder, &config, None);
         assert!(mirror.is_none());
+    }
+
+    #[test]
+    fn resolve_install_and_bin_dirs_default_bin_lives_under_agents() {
+        let home = PathBuf::from("/tmp/test-home");
+        let (install_dir, bin_dir) =
+            resolve_install_and_bin_dirs_with_home(None, &home).expect("resolve default dirs");
+
+        assert_eq!(install_dir, home.join(".acm"));
+        assert_eq!(bin_dir, home.join(".agents").join("bin"));
+    }
+
+    #[test]
+    fn resolve_install_and_bin_dirs_explicit_install_dir_keeps_local_bin() {
+        let home = PathBuf::from("/tmp/test-home");
+        let explicit = home.join("custom-root");
+        let (install_dir, bin_dir) =
+            resolve_install_and_bin_dirs_with_home(Some(explicit.clone()), &home)
+                .expect("resolve explicit dirs");
+
+        assert_eq!(install_dir, explicit);
+        assert_eq!(bin_dir, home.join("custom-root").join("bin"));
     }
 }

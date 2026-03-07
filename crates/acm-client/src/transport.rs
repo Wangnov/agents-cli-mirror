@@ -46,6 +46,7 @@ pub(super) fn select_asset_for_platform(
     checksums: &HashMap<String, HashMap<String, PlatformEntry>>,
     version: &str,
     platform: &str,
+    provider: &str,
 ) -> Result<(String, ArtifactEntry)> {
     let entries = checksums
         .get(version)
@@ -75,13 +76,18 @@ pub(super) fn select_asset_for_platform(
         .collect::<Vec<_>>();
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
-    if let Some((name, meta)) = select_installable_asset(&files, &hints, platform) {
+    if let Some((name, meta)) = select_installable_asset(&files, &hints, platform, provider) {
         return Ok((name, meta));
     }
 
     if let Some((name, meta)) = files
         .iter()
-        .find(|(name, _)| hints.iter().any(|hint| name.contains(hint)))
+        .filter(|(name, _)| hints.iter().any(|hint| name.contains(hint)))
+        .min_by(|(name_a, _), (name_b, _)| {
+            primary_asset_priority(name_a, provider, &hints)
+                .cmp(&primary_asset_priority(name_b, provider, &hints))
+                .then_with(|| name_a.cmp(name_b))
+        })
     {
         return Ok((name.clone(), meta.clone()));
     }
@@ -112,6 +118,7 @@ fn select_installable_asset(
     files: &[(String, ArtifactEntry)],
     hints: &[&str],
     platform: &str,
+    provider: &str,
 ) -> Option<(String, ArtifactEntry)> {
     let hinted = files
         .iter()
@@ -119,7 +126,12 @@ fn select_installable_asset(
         .filter_map(|(name, meta)| {
             installable_priority(name, platform).map(|priority| (priority, name, meta))
         })
-        .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        .min_by(|a, b| {
+            primary_asset_priority(a.1, provider, hints)
+                .cmp(&primary_asset_priority(b.1, provider, hints))
+                .then_with(|| a.0.cmp(&b.0))
+                .then_with(|| a.1.cmp(b.1))
+        });
     if let Some((_, name, meta)) = hinted {
         return Some((name.clone(), meta.clone()));
     }
@@ -129,8 +141,35 @@ fn select_installable_asset(
         .filter_map(|(name, meta)| {
             installable_priority(name, platform).map(|priority| (priority, name, meta))
         })
-        .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)))
+        .min_by(|a, b| {
+            primary_asset_priority(a.1, provider, hints)
+                .cmp(&primary_asset_priority(b.1, provider, hints))
+                .then_with(|| a.0.cmp(&b.0))
+                .then_with(|| a.1.cmp(b.1))
+        })
         .map(|(_, name, meta)| (name.clone(), meta.clone()))
+}
+
+fn primary_asset_priority(name: &str, provider: &str, hints: &[&str]) -> u8 {
+    let lower = name.to_ascii_lowercase();
+    let provider = provider.to_ascii_lowercase();
+
+    if lower == provider || lower == format!("{provider}.exe") {
+        return 0;
+    }
+
+    if let Some(remainder) = lower.strip_prefix(&format!("{provider}-")) {
+        if hints.iter().any(|hint| remainder.starts_with(hint)) {
+            return 0;
+        }
+        return 1;
+    }
+
+    if lower.starts_with(&format!("{provider}.")) {
+        return 1;
+    }
+
+    2
 }
 
 fn installable_priority(name: &str, platform: &str) -> Option<u8> {
@@ -338,8 +377,9 @@ mod tests {
             )]),
         );
 
-        let (name, meta) = select_asset_for_platform(&checksums, "v1.0.0", "aarch64-apple-darwin")
-            .expect("select asset");
+        let (name, meta) =
+            select_asset_for_platform(&checksums, "v1.0.0", "aarch64-apple-darwin", "codex")
+                .expect("select asset");
 
         assert_eq!(name, "codex-aarch64-apple-darwin.tar.gz");
         assert_eq!(meta.sha256, "sha-targz");
@@ -365,11 +405,47 @@ mod tests {
             )]),
         );
 
-        let (name, meta) =
-            select_asset_for_platform(&checksums, "v1.0.0", "x86_64-pc-windows-msvc")
-                .expect("select asset");
+        let (name, meta) = select_asset_for_platform(
+            &checksums,
+            "v1.0.0",
+            "x86_64-pc-windows-msvc",
+            "acm-installer",
+        )
+        .expect("select asset");
 
         assert_eq!(name, "acm-installer-x86_64-pc-windows-msvc.zip");
         assert_eq!(meta.sha256, "sha-zip");
+    }
+
+    #[test]
+    fn select_asset_for_platform_prefers_primary_codex_binary_over_internal_tools() {
+        let mut checksums = HashMap::new();
+        checksums.insert(
+            "v1.0.0".to_string(),
+            HashMap::from([(
+                "universal".to_string(),
+                entry(
+                    "codex-x86_64-unknown-linux-gnu.tar.gz",
+                    &[
+                        (
+                            "codex-responses-api-proxy-x86_64-unknown-linux-gnu.tar.gz",
+                            "sha-proxy",
+                        ),
+                        (
+                            "codex-command-runner-x86_64-unknown-linux-gnu.tar.gz",
+                            "sha-runner",
+                        ),
+                        ("codex-x86_64-unknown-linux-gnu.tar.gz", "sha-codex"),
+                    ],
+                ),
+            )]),
+        );
+
+        let (name, meta) =
+            select_asset_for_platform(&checksums, "v1.0.0", "x86_64-unknown-linux-gnu", "codex")
+                .expect("select asset");
+
+        assert_eq!(name, "codex-x86_64-unknown-linux-gnu.tar.gz");
+        assert_eq!(meta.sha256, "sha-codex");
     }
 }

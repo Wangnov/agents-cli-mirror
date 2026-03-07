@@ -81,6 +81,7 @@ pub(super) fn command_install(
             version: &version,
             archive_path: &archive_path,
             install_dir: &ctx.install_dir,
+            bin_dir: &ctx.bin_dir,
         })
     })?;
 
@@ -118,8 +119,7 @@ pub(super) fn command_install(
     ui.success(&format!("{} installed {}", provider, version));
 
     if !args.no_modify_path {
-        let bin_dir = engine_bin_dir(&ctx.install_dir);
-        ui.info(&format!("binary path: {}", bin_dir.display()));
+        ui.info(&format!("binary path: {}", ctx.bin_dir.display()));
     }
 
     ui.complete();
@@ -152,7 +152,8 @@ fn resolve_archive_from_mirror(
 ) -> Result<PathBuf> {
     let platform = detect_platform()?;
     let checksums = fetch_checksums(&ctx.client, ctx.retries, mirror_url, provider)?;
-    let (asset_name, asset_meta) = select_asset_for_platform(&checksums, version, &platform)?;
+    let (asset_name, asset_meta) =
+        select_asset_for_platform(&checksums, version, &platform, provider)?;
 
     let download_url = format!(
         "{}/{}/{}/files/{}",
@@ -405,6 +406,7 @@ pub(super) fn command_uninstall(
         provider: &provider,
         install_dir: &ctx.install_dir,
         install_path: Path::new(&installed.install_path),
+        bin_dir: &ctx.bin_dir,
     })?;
 
     set_runtime_record(
@@ -514,8 +516,7 @@ pub(super) fn command_doctor(ctx: &InstallContext, config: &LocalConfig) -> Resu
 
     checks.push(check_doctor(
         "bin_dir_in_path",
-        check_bin_in_path(engine_bin_dir(&ctx.install_dir))
-            .map(|_| "bin dir detected in PATH".to_string()),
+        check_bin_in_path(ctx.bin_dir.clone()).map(|_| "bin dir detected in PATH".to_string()),
     ));
 
     if let Some(mirror) = &ctx.mirror_url {

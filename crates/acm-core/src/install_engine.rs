@@ -11,6 +11,7 @@ pub struct InstallRequest<'a> {
     pub version: &'a str,
     pub archive_path: &'a Path,
     pub install_dir: &'a Path,
+    pub bin_dir: &'a Path,
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +26,7 @@ pub struct UninstallRequest<'a> {
     pub provider: &'a str,
     pub install_dir: &'a Path,
     pub install_path: &'a Path,
+    pub bin_dir: &'a Path,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +42,7 @@ pub struct ImportRequest<'a> {
     pub version: &'a str,
     pub from: &'a Path,
     pub install_dir: &'a Path,
+    pub bin_dir: &'a Path,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +58,7 @@ pub struct UpdateRequest<'a> {
     pub version: &'a str,
     pub archive_path: &'a Path,
     pub install_dir: &'a Path,
+    pub bin_dir: &'a Path,
 }
 
 #[derive(Debug, Clone)]
@@ -70,7 +74,7 @@ pub fn install_from_archive(req: &InstallRequest<'_>) -> Result<InstallResult> {
     fs::create_dir_all(&install_root)?;
 
     let executable = install_artifact(req.archive_path, &install_root, req.provider)?;
-    let bin_path = activate_executable(req.install_dir, req.provider, &executable)?;
+    let bin_path = activate_executable(req.bin_dir, req.provider, &executable)?;
 
     Ok(InstallResult {
         install_root,
@@ -85,6 +89,7 @@ pub fn update_from_archive(req: &UpdateRequest<'_>) -> Result<UpdateResult> {
         version: req.version,
         archive_path: req.archive_path,
         install_dir: req.install_dir,
+        bin_dir: req.bin_dir,
     })?;
     Ok(UpdateResult { install })
 }
@@ -96,12 +101,18 @@ pub fn uninstall_provider(req: &UninstallRequest<'_>) -> Result<UninstallResult>
         install_removed = true;
     }
 
-    let bin_install_dir = derive_install_dir_from_install_path(req.install_path, req.provider)
-        .unwrap_or_else(|| req.install_dir.to_path_buf());
-    let bin_path = bin_path_for_provider(&bin_install_dir, req.provider);
+    let mut bin_path = bin_path_for_provider(req.bin_dir, req.provider);
     let mut bin_removed = false;
     if fs::symlink_metadata(&bin_path).is_ok() {
         bin_removed = remove_bin_with_retry(&bin_path)?;
+    } else if let Some(bin_install_dir) =
+        derive_install_dir_from_install_path(req.install_path, req.provider)
+    {
+        let fallback_bin_path = bin_path_for_provider(&bin_dir(&bin_install_dir), req.provider);
+        if fallback_bin_path != bin_path && fs::symlink_metadata(&fallback_bin_path).is_ok() {
+            bin_removed = remove_bin_with_retry(&fallback_bin_path)?;
+            bin_path = fallback_bin_path;
+        }
     }
 
     Ok(UninstallResult {
@@ -167,7 +178,7 @@ pub fn import_from_dir(req: &ImportRequest<'_>) -> Result<ImportResult> {
 
     copy_dir_recursive(req.from, &install_root)?;
     let executable = locate_executable(&install_root, req.provider)?;
-    let bin_path = activate_executable(req.install_dir, req.provider, &executable)?;
+    let bin_path = activate_executable(req.bin_dir, req.provider, &executable)?;
 
     Ok(ImportResult {
         install_root,
@@ -192,11 +203,11 @@ pub fn bin_dir(install_dir: &Path) -> PathBuf {
     install_dir.join("bin")
 }
 
-pub fn bin_path_for_provider(install_dir: &Path, provider: &str) -> PathBuf {
+pub fn bin_path_for_provider(bin_dir: &Path, provider: &str) -> PathBuf {
     if cfg!(windows) {
-        bin_dir(install_dir).join(format!("{}.exe", provider))
+        bin_dir.join(format!("{}.exe", provider))
     } else {
-        bin_dir(install_dir).join(provider)
+        bin_dir.join(provider)
     }
 }
 
@@ -300,11 +311,10 @@ fn is_executable_file(path: &Path) -> Result<bool> {
     }
 }
 
-fn activate_executable(install_dir: &Path, provider: &str, executable: &Path) -> Result<PathBuf> {
-    let bin_dir = bin_dir(install_dir);
-    fs::create_dir_all(&bin_dir)?;
+fn activate_executable(bin_dir: &Path, provider: &str, executable: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(bin_dir)?;
 
-    let link_path = bin_path_for_provider(install_dir, provider);
+    let link_path = bin_path_for_provider(bin_dir, provider);
     if link_path.exists() {
         let _ = fs::remove_file(&link_path);
     }
@@ -423,11 +433,14 @@ mod tests {
         let source = temp.path().join("tool-a.bin");
         fs::write(&source, b"echo tool-a").expect("write source artifact");
 
+        let bin_dir = install_dir.join("bin");
+
         let install = install_from_archive(&InstallRequest {
             provider: "tool-a",
             version: "1.0.0",
             archive_path: &source,
             install_dir: &install_dir,
+            bin_dir: &bin_dir,
         })
         .expect("install should succeed");
 
@@ -439,6 +452,7 @@ mod tests {
             provider: "tool-a",
             install_dir: &install_dir,
             install_path: &install.install_root,
+            bin_dir: &bin_dir,
         })
         .expect("uninstall should succeed");
 
@@ -459,11 +473,14 @@ mod tests {
         let source = temp.path().join("tool-c.bin");
         fs::write(&source, b"echo tool-c").expect("write source artifact");
 
+        let bin_dir = install_dir.join("bin");
+
         let install = install_from_archive(&InstallRequest {
             provider: "tool-c",
             version: "1.0.0",
             archive_path: &source,
             install_dir: &install_dir,
+            bin_dir: &bin_dir,
         })
         .expect("install should succeed");
 
@@ -471,6 +488,45 @@ mod tests {
             provider: "tool-c",
             install_dir: &fallback_install_dir,
             install_path: &install.install_root,
+            bin_dir: &fallback_install_dir.join("bin"),
+        })
+        .expect("uninstall should succeed");
+
+        assert!(uninstall.install_removed);
+        assert!(uninstall.bin_removed);
+        assert!(!install.install_root.exists());
+        assert!(!install.bin_path.exists());
+    }
+
+    #[test]
+    fn test_install_and_uninstall_with_separate_bin_dir() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let install_dir = temp.path().join("install-root");
+        let bin_dir = temp.path().join("agents-home").join("bin");
+        fs::create_dir_all(&install_dir).expect("create install dir");
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+
+        let source = temp.path().join("tool-d.bin");
+        fs::write(&source, b"echo tool-d").expect("write source artifact");
+
+        let install = install_from_archive(&InstallRequest {
+            provider: "tool-d",
+            version: "1.0.0",
+            archive_path: &source,
+            install_dir: &install_dir,
+            bin_dir: &bin_dir,
+        })
+        .expect("install should succeed");
+
+        assert!(install.install_root.starts_with(&install_dir));
+        assert!(install.bin_path.starts_with(&bin_dir));
+        assert!(install.bin_path.exists());
+
+        let uninstall = uninstall_provider(&UninstallRequest {
+            provider: "tool-d",
+            install_dir: &install_dir,
+            install_path: &install.install_root,
+            bin_dir: &bin_dir,
         })
         .expect("uninstall should succeed");
 
@@ -495,11 +551,14 @@ mod tests {
         };
         fs::write(&source_bin, b"tool-b").expect("write source binary");
 
+        let bin_dir = install_dir.join("bin");
+
         let imported = import_from_dir(&ImportRequest {
             provider: "tool-b",
             version: "2.0.0",
             from: &from_dir,
             install_dir: &install_dir,
+            bin_dir: &bin_dir,
         })
         .expect("import should succeed");
 
