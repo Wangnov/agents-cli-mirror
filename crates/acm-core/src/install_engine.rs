@@ -96,7 +96,9 @@ pub fn uninstall_provider(req: &UninstallRequest<'_>) -> Result<UninstallResult>
         install_removed = true;
     }
 
-    let bin_path = bin_path_for_provider(req.install_dir, req.provider);
+    let bin_install_dir = derive_install_dir_from_install_path(req.install_path, req.provider)
+        .unwrap_or_else(|| req.install_dir.to_path_buf());
+    let bin_path = bin_path_for_provider(&bin_install_dir, req.provider);
     let mut bin_removed = false;
     if fs::symlink_metadata(&bin_path).is_ok() {
         bin_removed = remove_bin_with_retry(&bin_path)?;
@@ -107,6 +109,22 @@ pub fn uninstall_provider(req: &UninstallRequest<'_>) -> Result<UninstallResult>
         bin_removed,
         bin_path,
     })
+}
+
+fn derive_install_dir_from_install_path(install_path: &Path, provider: &str) -> Option<PathBuf> {
+    let provider_dir = install_path.parent()?;
+    let provider_name = provider_dir.file_name()?.to_str()?;
+    if provider_name != provider {
+        return None;
+    }
+
+    let providers_dir = provider_dir.parent()?;
+    let providers_name = providers_dir.file_name()?.to_str()?;
+    if providers_name != "providers" {
+        return None;
+    }
+
+    Some(providers_dir.parent()?.to_path_buf())
 }
 
 fn remove_bin_with_retry(path: &Path) -> Result<bool> {
@@ -420,6 +438,38 @@ mod tests {
         let uninstall = uninstall_provider(&UninstallRequest {
             provider: "tool-a",
             install_dir: &install_dir,
+            install_path: &install.install_root,
+        })
+        .expect("uninstall should succeed");
+
+        assert!(uninstall.install_removed);
+        assert!(uninstall.bin_removed);
+        assert!(!install.install_root.exists());
+        assert!(!install.bin_path.exists());
+    }
+
+    #[test]
+    fn test_uninstall_uses_install_path_to_remove_custom_install_dir_bin() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let install_dir = temp.path().join("custom-install");
+        let fallback_install_dir = temp.path().join("default-install");
+        fs::create_dir_all(&install_dir).expect("create install dir");
+        fs::create_dir_all(&fallback_install_dir).expect("create fallback install dir");
+
+        let source = temp.path().join("tool-c.bin");
+        fs::write(&source, b"echo tool-c").expect("write source artifact");
+
+        let install = install_from_archive(&InstallRequest {
+            provider: "tool-c",
+            version: "1.0.0",
+            archive_path: &source,
+            install_dir: &install_dir,
+        })
+        .expect("install should succeed");
+
+        let uninstall = uninstall_provider(&UninstallRequest {
+            provider: "tool-c",
+            install_dir: &fallback_install_dir,
             install_path: &install.install_root,
         })
         .expect("uninstall should succeed");

@@ -61,7 +61,7 @@ function Run-Cli {
     $uninstallScript = Join-Path $env:TEMP ("acm-uninstall-" + $Name + "-" + [guid]::NewGuid().ToString("N") + ".ps1")
     Invoke-WebRequest -Uri "$env:MIRROR_URL/$Name/uninstall.ps1" -UseBasicParsing -OutFile $uninstallScript
     try {
-        & $uninstallScript @UninstallArgs
+        & $uninstallScript @("--install-dir", $InstallDir) @UninstallArgs
     } finally {
         Remove-Item -Force -ErrorAction SilentlyContinue $uninstallScript
     }

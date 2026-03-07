@@ -253,7 +253,13 @@ detect_platform() {{
             esac
             ;;
         linux)
-            if ldd --version 2>&1 | grep -qi musl; then
+            local ldd_output=""
+            if command -v ldd >/dev/null 2>&1; then
+                ldd_output="$(ldd --version 2>&1 || true)"
+            fi
+            if printf '%s' "$ldd_output" | grep -qi musl \
+                || ls /lib/ld-musl-* >/dev/null 2>&1 \
+                || ls /lib/libc.musl-* >/dev/null 2>&1; then
                 libc="-musl"
             else
                 libc="-gnu"
@@ -776,5 +782,22 @@ mod tests {
 
         assert!(!script.contains("COMMAND_ARGS+=(\\\"\\${FORWARD_ARGS[@]}\\\")"));
         assert!(script.contains("if [[ ${#FORWARD_ARGS[@]} -gt 0 ]]; then"));
+    }
+
+    #[test]
+    fn render_sh_script_detects_musl_without_pipefail_false_negative() {
+        let script = render_bootstrap_script(
+            ScriptCommand::Install,
+            Some("tool-a"),
+            ScriptFlavor::Sh,
+            Some("https://mirror.example.com"),
+            "installer",
+            "acm-installer",
+        )
+        .expect("render shell bootstrap script");
+
+        assert!(script.contains("ldd_output=\"$(ldd --version 2>&1 || true)\""));
+        assert!(script.contains("printf '%s' \"$ldd_output\" | grep -qi musl"));
+        assert!(script.contains("ls /lib/ld-musl-* >/dev/null 2>&1"));
     }
 }

@@ -9,7 +9,9 @@ export MIRROR_URL
 
 is_musl() {
   if command -v ldd >/dev/null 2>&1; then
-    if ldd --version 2>&1 | grep -qi musl; then
+    local ldd_output=""
+    ldd_output="$(ldd --version 2>&1 || true)"
+    if printf '%s' "$ldd_output" | grep -qi musl; then
       return 0
     fi
   fi
@@ -73,8 +75,9 @@ PY
 run_cli() {
   local name="$1"
   local cmd="$2"
-  local uninstall_args="${3:-}"
   local bin_path="$HOME/.agents/bin/$cmd"
+  shift 2
+  local uninstall_args=("$@")
 
   echo "==> Installing $name"
   curl -fsSL "$MIRROR_URL/install/$name" >/dev/null
@@ -93,13 +96,13 @@ run_cli() {
 
   echo "==> Uninstalling $name"
   curl -fsSL "$MIRROR_URL/uninstall/$name" >/dev/null
-  if [[ -n "$uninstall_args" ]]; then
-    curl -fsSL "$MIRROR_URL/uninstall/$name" | MIRROR_URL="$MIRROR_URL" bash -s -- $uninstall_args
+  if [[ ${#uninstall_args[@]} -gt 0 ]]; then
+    curl -fsSL "$MIRROR_URL/uninstall/$name" | MIRROR_URL="$MIRROR_URL" bash -s -- --install-dir "$HOME/.agents" "${uninstall_args[@]}"
   else
-    curl -fsSL "$MIRROR_URL/uninstall/$name" | MIRROR_URL="$MIRROR_URL" bash -s --
+    curl -fsSL "$MIRROR_URL/uninstall/$name" | MIRROR_URL="$MIRROR_URL" bash -s -- --install-dir "$HOME/.agents"
   fi
 
-  if [[ -e "$HOME/.agents/bin/$cmd" ]]; then
+  if [[ -e "$bin_path" || -L "$bin_path" ]]; then
     echo "Uninstall check failed: $cmd still exists" >&2
     exit 1
   fi
