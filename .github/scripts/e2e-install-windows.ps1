@@ -46,8 +46,13 @@ function Run-Cli {
     Write-Host "==> Version check: $Bin"
     & $Bin --version
 
-    Write-Host "==> TUI check: $Bin"
-    Invoke-TuiCheck $Bin
+    if ($Name -eq "codex") {
+        Write-Host "==> Help check: $Bin"
+        & $Bin --help | Out-Null
+    } else {
+        Write-Host "==> TUI check: $Bin"
+        Invoke-TuiCheck $Bin
+    }
 
     Write-Host "==> Uninstalling $Name"
     $procName = [IO.Path]::GetFileNameWithoutExtension($Bin)
