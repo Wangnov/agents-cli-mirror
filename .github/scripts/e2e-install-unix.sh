@@ -127,6 +127,8 @@ run_cli() {
 
 if [[ "${SKIP_CLAUDE:-}" == "1" ]]; then
   echo "Skipping claude-code: SKIP_CLAUDE=1"
+elif is_musl; then
+  echo "Skipping claude-code on musl: upstream binary is currently incompatible"
 else
   run_cli "claude-code" "claude-code"
 fi
@@ -140,5 +142,5 @@ if [[ "${SKIP_GEMINI:-}" == "1" ]]; then
 elif is_musl; then
   echo "Skipping gemini on musl: Node.js runtime not available"
 else
-  run_cli "gemini" "gemini" "--yes"
+  run_cli "gemini" "gemini"
 fi

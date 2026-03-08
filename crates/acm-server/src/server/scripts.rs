@@ -263,10 +263,10 @@ detect_platform() {{
             if command -v ldd >/dev/null 2>&1; then
                 ldd_output="$(ldd --version 2>&1 || true)"
             fi
-            if printf '%s' "$ldd_output" | grep -qi musl \
-                || ls /lib/ld-musl-* >/dev/null 2>&1 \
-                || ls /lib/libc.musl-* >/dev/null 2>&1; then
+            if printf '%s' "$ldd_output" | grep -qi musl; then
                 libc="-musl"
+            elif getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
+                libc="-gnu"
             else
                 libc="-gnu"
             fi
@@ -969,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn render_sh_script_detects_musl_without_pipefail_false_negative() {
+    fn render_sh_script_detects_musl_without_false_positive_file_heuristics() {
         let script = render_bootstrap_script(
             ScriptCommand::Install,
             Some("tool-a"),
@@ -982,6 +982,7 @@ mod tests {
 
         assert!(script.contains("ldd_output=\"$(ldd --version 2>&1 || true)\""));
         assert!(script.contains("printf '%s' \"$ldd_output\" | grep -qi musl"));
-        assert!(script.contains("ls /lib/ld-musl-* >/dev/null 2>&1"));
+        assert!(script.contains("getconf GNU_LIBC_VERSION >/dev/null 2>&1"));
+        assert!(!script.contains("ls /lib/ld-musl-* >/dev/null 2>&1"));
     }
 }

@@ -1081,6 +1081,31 @@ tags = ["latest"]
     }
 
     #[test]
+    fn test_install_e2e_scripts_match_current_runtime_contracts() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let unix_script = fs::read_to_string(repo_root.join(".github/scripts/e2e-install-unix.sh"))
+            .expect("read unix install e2e script");
+        let windows_script =
+            fs::read_to_string(repo_root.join(".github/scripts/e2e-install-windows.ps1"))
+                .expect("read windows install e2e script");
+
+        assert!(unix_script.contains("elif is_musl; then"));
+        assert!(unix_script.contains("Skipping claude-code on musl"));
+        assert!(unix_script.contains("run_cli \"claude-code\" \"claude-code\""));
+        assert!(unix_script.contains("run_cli \"gemini\" \"gemini\""));
+        assert!(!unix_script.contains("run_cli \"gemini\" \"gemini\" \"--yes\""));
+
+        assert!(
+            windows_script
+                .contains("Run-Cli -Name \"claude-code\" -Bin \"$BinDir\\claude-code.exe\"")
+        );
+        assert!(windows_script.contains("Run-Cli -Name \"gemini\" -Bin \"$BinDir\\gemini.exe\""));
+        assert!(!windows_script.contains(
+            "Run-Cli -Name \"gemini\" -Bin \"$BinDir\\gemini.cmd\" -UninstallArgs @(\"-Yes\")"
+        ));
+    }
+
+    #[test]
     fn test_load_config_accepts_s3_with_minimal_required_fields() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(
