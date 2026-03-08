@@ -1,6 +1,6 @@
 [package]
 name = "acm-server"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 rust-version = "1.85"
 description = "Config-driven release mirror server"
@@ -16,7 +16,7 @@ s3 = [
 ]
 
 [dependencies]
-acm-core = { path = "../acm-core", version = "0.1.4" }
+acm-core = { path = "../acm-core", version = "0.1.8" }
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
 
