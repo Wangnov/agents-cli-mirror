@@ -1,6 +1,6 @@
 [package]
 name = "acm-core"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 rust-version = "1.85"
 description = "Shared core types and engines for ACM"
