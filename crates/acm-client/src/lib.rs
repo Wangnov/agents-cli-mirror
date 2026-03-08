@@ -600,6 +600,21 @@ fn provider_binary_name(provider: &str) -> String {
     }
 }
 
+fn provider_binary_candidates(provider: &str) -> Vec<String> {
+    if cfg!(windows) {
+        vec![format!("{provider}.exe"), format!("{provider}.cmd")]
+    } else {
+        vec![provider.to_string()]
+    }
+}
+
+fn provider_bin_paths(bin_dir: &Path, provider: &str) -> Vec<PathBuf> {
+    provider_binary_candidates(provider)
+        .into_iter()
+        .map(|binary| bin_dir.join(binary))
+        .collect()
+}
+
 fn provider_bin_path(bin_dir: &Path, provider: &str) -> PathBuf {
     bin_dir.join(provider_binary_name(provider))
 }
@@ -615,7 +630,9 @@ fn installed_provider_is_healthy(
 ) -> bool {
     Path::new(&installed.install_path).exists()
         && Path::new(&installed.executable).exists()
-        && provider_bin_path(&ctx.bin_dir, provider).exists()
+        && provider_bin_paths(&ctx.bin_dir, provider)
+            .iter()
+            .any(|path| path.exists())
 }
 
 fn check_state_file(ctx: &InstallContext) -> Result<()> {
@@ -1111,28 +1128,36 @@ fn check_command_resolution(ctx: &InstallContext, state: &ClientState) -> Result
         }
 
         let binary = provider_binary_name(provider);
-        let actual = find_command_in_path(&binary)
+        let actual = provider_binary_candidates(provider)
+            .into_iter()
+            .find_map(|candidate| find_command_in_path(&candidate))
             .ok_or_else(|| anyhow!("{provider} is not resolvable from PATH"))?;
-        let expected = provider_bin_path(&ctx.bin_dir, provider);
+        let expected_paths = provider_bin_paths(&ctx.bin_dir, provider);
 
-        let matches_expected =
-            normalize_path_for_compare(&actual) == normalize_path_for_compare(&expected) || {
-                #[cfg(unix)]
-                {
-                    let shim = shim_dir.join(&binary);
-                    normalize_path_for_compare(&actual) == normalize_path_for_compare(&shim)
-                }
-                #[cfg(not(unix))]
-                {
-                    false
-                }
-            };
+        let matches_expected = expected_paths.iter().any(|expected| {
+            normalize_path_for_compare(&actual) == normalize_path_for_compare(expected)
+        }) || {
+            #[cfg(unix)]
+            {
+                let shim = shim_dir.join(&binary);
+                normalize_path_for_compare(&actual) == normalize_path_for_compare(&shim)
+            }
+            #[cfg(not(unix))]
+            {
+                false
+            }
+        };
 
         if !matches_expected {
+            let expected_display = expected_paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" or ");
             bail!(
                 "{provider} resolves to {} instead of {}",
                 actual.display(),
-                expected.display()
+                expected_display
             );
         }
 

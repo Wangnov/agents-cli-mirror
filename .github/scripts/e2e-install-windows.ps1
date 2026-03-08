@@ -98,5 +98,5 @@ Run-Cli -Name "codex" -Bin "$BinDir\codex.exe"
 if ($env:SKIP_GEMINI -eq "1") {
     Write-Host "Skipping gemini: SKIP_GEMINI=1"
 } else {
-    Run-Cli -Name "gemini" -Bin "$BinDir\gemini.exe"
+    Run-Cli -Name "gemini" -Bin "$BinDir\gemini.cmd"
 }

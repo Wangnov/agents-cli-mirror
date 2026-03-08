@@ -103,13 +103,20 @@ pub fn uninstall_provider(req: &UninstallRequest<'_>) -> Result<UninstallResult>
 
     let mut bin_path = bin_path_for_provider(req.bin_dir, req.provider);
     let mut bin_removed = false;
-    if fs::symlink_metadata(&bin_path).is_ok() {
-        bin_removed = remove_bin_with_retry(&bin_path)?;
+    if let Some(existing_path) = bin_candidate_paths_for_provider(req.bin_dir, req.provider)
+        .into_iter()
+        .find(|path| fs::symlink_metadata(path).is_ok())
+    {
+        bin_removed = remove_bin_with_retry(&existing_path)?;
+        bin_path = existing_path;
     } else if let Some(bin_install_dir) =
         derive_install_dir_from_install_path(req.install_path, req.provider)
     {
-        let fallback_bin_path = bin_path_for_provider(&bin_dir(&bin_install_dir), req.provider);
-        if fallback_bin_path != bin_path && fs::symlink_metadata(&fallback_bin_path).is_ok() {
+        if let Some(fallback_bin_path) =
+            bin_candidate_paths_for_provider(&bin_dir(&bin_install_dir), req.provider)
+                .into_iter()
+                .find(|path| *path != bin_path && fs::symlink_metadata(path).is_ok())
+        {
             bin_removed = remove_bin_with_retry(&fallback_bin_path)?;
             bin_path = fallback_bin_path;
         }
@@ -203,12 +210,64 @@ pub fn bin_dir(install_dir: &Path) -> PathBuf {
     install_dir.join("bin")
 }
 
-pub fn bin_path_for_provider(bin_dir: &Path, provider: &str) -> PathBuf {
+pub fn bin_candidate_paths_for_provider(bin_dir: &Path, provider: &str) -> Vec<PathBuf> {
     if cfg!(windows) {
-        bin_dir.join(format!("{}.exe", provider))
+        vec![
+            bin_dir.join(format!("{}.exe", provider)),
+            bin_dir.join(format!("{}.cmd", provider)),
+        ]
     } else {
-        bin_dir.join(provider)
+        vec![bin_dir.join(provider)]
     }
+}
+
+pub fn bin_path_for_provider(bin_dir: &Path, provider: &str) -> PathBuf {
+    bin_candidate_paths_for_provider(bin_dir, provider)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| bin_dir.join(provider))
+}
+
+fn installed_artifact_name(artifact_path: &Path, provider: &str) -> String {
+    if cfg!(windows) && is_windows_node_script(artifact_path) {
+        let extension = artifact_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("js");
+        return format!("{provider}.{extension}");
+    }
+
+    if cfg!(windows) {
+        format!("{}.exe", provider)
+    } else {
+        provider.to_string()
+    }
+}
+
+fn provider_artifact_names(provider: &str) -> Vec<String> {
+    let provider = provider.to_ascii_lowercase();
+    let mut names = vec![provider.clone()];
+    if cfg!(windows) {
+        names.push(format!("{provider}.exe"));
+        names.push(format!("{provider}.cmd"));
+        names.push(format!("{provider}.bat"));
+        names.push(format!("{provider}.js"));
+        names.push(format!("{provider}.mjs"));
+        names.push(format!("{provider}.cjs"));
+    }
+    names
+}
+
+fn is_windows_node_script(path: &Path) -> bool {
+    cfg!(windows)
+        && matches!(
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str(),
+            "js" | "mjs" | "cjs"
+        )
 }
 
 fn install_artifact(artifact_path: &Path, install_root: &Path, provider: &str) -> Result<PathBuf> {
@@ -229,11 +288,7 @@ fn install_artifact(artifact_path: &Path, install_root: &Path, provider: &str) -
         return locate_executable(&extract_root, provider);
     }
 
-    let target_name = if cfg!(windows) {
-        format!("{}.exe", provider)
-    } else {
-        provider.to_string()
-    };
+    let target_name = installed_artifact_name(artifact_path, provider);
     let target_path = install_root.join(target_name);
     copy_file_atomic(artifact_path, &target_path)?;
 
@@ -253,13 +308,16 @@ fn locate_executable(root: &Path, provider: &str) -> Result<PathBuf> {
     collect_files(root, &mut files)?;
 
     let mut candidates = Vec::new();
-    let provider_lower = provider.to_ascii_lowercase();
+    let provider_names = provider_artifact_names(provider);
     for file in &files {
         let Some(name) = file.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
         let name_lower = name.to_ascii_lowercase();
-        if name_lower == provider_lower || name_lower == format!("{}.exe", provider_lower) {
+        if provider_names
+            .iter()
+            .any(|candidate| candidate == &name_lower)
+        {
             candidates.push(file.clone());
         }
     }
@@ -314,10 +372,17 @@ fn is_executable_file(path: &Path) -> Result<bool> {
 fn activate_executable(bin_dir: &Path, provider: &str, executable: &Path) -> Result<PathBuf> {
     fs::create_dir_all(bin_dir)?;
 
-    let link_path = bin_path_for_provider(bin_dir, provider);
-    if link_path.exists() {
-        let _ = fs::remove_file(&link_path);
+    for candidate in bin_candidate_paths_for_provider(bin_dir, provider) {
+        if candidate.exists() {
+            let _ = fs::remove_file(&candidate);
+        }
     }
+
+    let link_path = if is_windows_node_script(executable) {
+        bin_dir.join(format!("{}.cmd", provider))
+    } else {
+        bin_path_for_provider(bin_dir, provider)
+    };
 
     #[cfg(unix)]
     {
@@ -327,7 +392,15 @@ fn activate_executable(bin_dir: &Path, provider: &str, executable: &Path) -> Res
 
     #[cfg(windows)]
     {
-        copy_file_atomic(executable, &link_path)?;
+        if is_windows_node_script(executable) {
+            let wrapper = format!(
+                "@echo off\r\nsetlocal\r\nwhere node >nul 2>nul\r\nif errorlevel 1 (\r\n  echo Node.js is required to run {provider}. 1>&2\r\n  exit /b 1\r\n)\r\nnode \"{}\" %*\r\n",
+                executable.display()
+            );
+            write_file_atomic(&link_path, wrapper.as_bytes())?;
+        } else {
+            copy_file_atomic(executable, &link_path)?;
+        }
     }
 
     Ok(link_path)
@@ -395,6 +468,23 @@ fn copy_file_atomic(from: &Path, to: &Path) -> Result<()> {
     temp.persist(to)
         .map_err(|err| anyhow!("persist failed for {}: {}", to.display(), err))?;
 
+    Ok(())
+}
+
+#[cfg(windows)]
+fn write_file_atomic(to: &Path, content: &[u8]) -> Result<()> {
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut temp = NamedTempFile::new_in(
+        to.parent()
+            .ok_or_else(|| anyhow!("target has no parent: {}", to.display()))?,
+    )?;
+    use std::io::Write;
+    temp.write_all(content)?;
+    temp.persist(to)
+        .map_err(|err| anyhow!("persist failed for {}: {}", to.display(), err))?;
     Ok(())
 }
 

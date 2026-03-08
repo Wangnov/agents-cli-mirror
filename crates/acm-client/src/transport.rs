@@ -82,7 +82,7 @@ pub(super) fn select_asset_for_platform(
 
     if let Some((name, meta)) = files
         .iter()
-        .filter(|(name, _)| hints.iter().any(|hint| name.contains(hint)))
+        .filter(|(name, _)| hints.iter().any(|hint| matches_platform_hint(name, hint)))
         .min_by(|(name_a, _), (name_b, _)| {
             primary_asset_priority(name_a, provider, &hints)
                 .cmp(&primary_asset_priority(name_b, provider, &hints))
@@ -114,6 +114,18 @@ fn platform_hints(platform: &str) -> Vec<&'static str> {
     }
 }
 
+fn matches_platform_hint(name: &str, hint: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let hint = hint.to_ascii_lowercase();
+
+    lower.match_indices(&hint).any(|(index, _)| {
+        let before = lower[..index].chars().next_back();
+        let after = lower[index + hint.len()..].chars().next();
+        matches!(before, None | Some('/' | '-' | '_' | '.'))
+            && matches!(after, None | Some('/' | '.' | '_'))
+    })
+}
+
 fn select_installable_asset(
     files: &[(String, ArtifactEntry)],
     hints: &[&str],
@@ -122,7 +134,7 @@ fn select_installable_asset(
 ) -> Option<(String, ArtifactEntry)> {
     let hinted = files
         .iter()
-        .filter(|(name, _)| hints.iter().any(|hint| name.contains(hint)))
+        .filter(|(name, _)| hints.iter().any(|hint| matches_platform_hint(name, hint)))
         .filter_map(|(name, meta)| {
             installable_priority(name, platform).map(|priority| (priority, name, meta))
         })
@@ -447,5 +459,34 @@ mod tests {
 
         assert_eq!(name, "codex-x86_64-unknown-linux-gnu.tar.gz");
         assert_eq!(meta.sha256, "sha-codex");
+    }
+
+    #[test]
+    fn select_asset_for_platform_does_not_confuse_gnu_with_musl_alias_paths() {
+        let mut checksums = HashMap::new();
+        checksums.insert(
+            "v1.0.0".to_string(),
+            HashMap::from([(
+                "universal".to_string(),
+                entry(
+                    "linux-x64/claude",
+                    &[
+                        ("linux-x64-musl/claude", "sha-musl"),
+                        ("linux-x64/claude", "sha-gnu"),
+                    ],
+                ),
+            )]),
+        );
+
+        let (name, meta) = select_asset_for_platform(
+            &checksums,
+            "v1.0.0",
+            "x86_64-unknown-linux-gnu",
+            "claude-code",
+        )
+        .expect("select asset");
+
+        assert_eq!(name, "linux-x64/claude");
+        assert_eq!(meta.sha256, "sha-gnu");
     }
 }

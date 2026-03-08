@@ -1099,7 +1099,7 @@ tags = ["latest"]
             windows_script
                 .contains("Run-Cli -Name \"claude-code\" -Bin \"$BinDir\\claude-code.exe\"")
         );
-        assert!(windows_script.contains("Run-Cli -Name \"gemini\" -Bin \"$BinDir\\gemini.exe\""));
+        assert!(windows_script.contains("Run-Cli -Name \"gemini\" -Bin \"$BinDir\\gemini.cmd\""));
         assert!(!windows_script.contains(
             "Run-Cli -Name \"gemini\" -Bin \"$BinDir\\gemini.cmd\" -UninstallArgs @(\"-Yes\")"
         ));
