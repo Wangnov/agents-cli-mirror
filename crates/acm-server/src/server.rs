@@ -12,6 +12,7 @@ use tokio::time::{Duration, Instant, interval};
 use tracing::{error, info, warn};
 
 use crate::config::Config;
+use crate::provider_aliases::canonical_provider_name;
 
 mod routes;
 pub(crate) mod scripts;
@@ -102,6 +103,7 @@ async fn provider_tag(
     State(state): State<Arc<AppState>>,
     Path((provider, tag)): Path<(String, String)>,
 ) -> Result<String, StatusCode> {
+    let provider = canonical_provider_name(&provider).to_string();
     let provider = state
         .providers
         .get(&provider)
@@ -116,6 +118,7 @@ async fn provider_generic_file(
     Path((provider, version, filepath)): Path<(String, String, String)>,
     req: Request,
 ) -> Result<Response, StatusCode> {
+    let provider = canonical_provider_name(&provider).to_string();
     if !state.providers.contains_key(&provider) {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -329,6 +332,7 @@ async fn command_script(
     command: scripts::ScriptCommand,
     headers: HeaderMap,
 ) -> Response {
+    let provider = provider.map(|name| canonical_provider_name(&name).to_string());
     if let Some(name) = provider.as_deref()
         && !state.providers.contains_key(name)
     {
@@ -396,6 +400,7 @@ async fn fixed_command_script(
     command: scripts::ScriptCommand,
     flavor: scripts::ScriptFlavor,
 ) -> Response {
+    let provider = provider.map(|name| canonical_provider_name(&name).to_string());
     if let Some(name) = provider.as_deref()
         && !state.providers.contains_key(name)
     {
@@ -491,6 +496,7 @@ async fn api_provider_info(
     State(state): State<Arc<AppState>>,
     Path(provider): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    let provider = canonical_provider_name(&provider).to_string();
     let provider_instance = state
         .providers
         .get(&provider)
@@ -503,6 +509,7 @@ async fn api_provider_versions(
     State(state): State<Arc<AppState>>,
     Path(provider): Path<String>,
 ) -> Result<Json<Vec<String>>, StatusCode> {
+    let provider = canonical_provider_name(&provider).to_string();
     let provider_name = state
         .providers
         .get(&provider)
@@ -515,6 +522,7 @@ async fn api_provider_checksums(
     State(state): State<Arc<AppState>>,
     Path(provider): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    let provider = canonical_provider_name(&provider).to_string();
     let provider_name = state
         .providers
         .get(&provider)
@@ -533,6 +541,7 @@ async fn api_provider_refresh(
     Path(provider): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    let provider = canonical_provider_name(&provider).to_string();
     if !state.providers.contains_key(&provider) {
         return Err(StatusCode::NOT_FOUND);
     }

@@ -22,14 +22,73 @@ enabled = false
 interval_minutes = 10
 
 [[providers]]
-name = "codex"
-source = "github_release"
-repo = "openai/codex"
+name = "claude-code"
+source = "gcs_release"
+upstream_url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
+files = [
+  "darwin-x64/claude",
+  "darwin-arm64/claude",
+  "linux-x64/claude",
+  "linux-arm64/claude",
+  "linux-x64-musl/claude",
+  "linux-arm64-musl/claude",
+  "win32-x64/claude.exe"
+]
+platforms = [
+  "darwin-x64",
+  "darwin-arm64",
+  "linux-x64",
+  "linux-arm64",
+  "linux-x64-musl",
+  "linux-arm64-musl",
+  "win32-x64"
+]
 tags = ["latest"]
 update_policy = "tracking"
 
 [providers.ui]
+preset = "claude"
+
+[[providers]]
+name = "codex"
+source = "github_release"
+repo = "openai/codex"
+tags = ["latest"]
+platforms = [
+  "darwin-x64",
+  "darwin-arm64",
+  "linux-x64",
+  "linux-arm64",
+  "linux-x64-musl",
+  "linux-arm64-musl",
+  "win32-x64",
+  "win32-arm64"
+]
+include_prerelease = false
+update_policy = "tracking"
+
+[providers.ui]
 preset = "codex"
+
+[[providers]]
+name = "gemini"
+source = "github_release"
+repo = "google-gemini/gemini-cli"
+tags = ["latest"]
+platforms = [
+  "darwin-x64",
+  "darwin-arm64",
+  "linux-x64",
+  "linux-arm64",
+  "linux-x64-musl",
+  "linux-arm64-musl",
+  "win32-x64"
+]
+include_prerelease = false
+update_policy = "tracking"
+
+[providers.ui]
+preset = "gemini"
 
 [[providers]]
 name = "installer"

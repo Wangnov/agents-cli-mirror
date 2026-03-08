@@ -17,18 +17,12 @@ jobs:
         include:
           - os: macos-15-intel
             name: macos-x64
-            skip_codex: false
           - os: macos-latest
             name: macos-arm64
-            skip_codex: false
           - os: windows-latest
             name: windows-x64
-            skip_codex: false
     env:
       MIRROR_URL: ${{ github.event.inputs.mirror_url || secrets.MIRROR_PUBLIC_URL }}
-      SKIP_CLAUDE: "1"
-      SKIP_GEMINI: "1"
-      SKIP_CODEX: ${{ matrix.skip_codex && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,14 +37,26 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsSL "$MIRROR_URL/api/installer/info" >/dev/null
+          curl -fsSL "$MIRROR_URL/api/claude-code/info" >/dev/null
+          curl -fsSL "$MIRROR_URL/api/codex/info" >/dev/null
+          curl -fsSL "$MIRROR_URL/api/gemini/info" >/dev/null
+          curl -fsSL "$MIRROR_URL/claude-code/install.sh" >/dev/null
+          curl -fsSL "$MIRROR_URL/claude/install.sh" >/dev/null
           curl -fsSL "$MIRROR_URL/codex/install.sh" >/dev/null
+          curl -fsSL "$MIRROR_URL/gemini/install.sh" >/dev/null
 
       - name: Probe mirror (Windows)
         if: startsWith(matrix.os, 'windows')
         shell: pwsh
         run: |
           Invoke-RestMethod "$env:MIRROR_URL/api/installer/info" | Out-Null
+          Invoke-RestMethod "$env:MIRROR_URL/api/claude-code/info" | Out-Null
+          Invoke-RestMethod "$env:MIRROR_URL/api/codex/info" | Out-Null
+          Invoke-RestMethod "$env:MIRROR_URL/api/gemini/info" | Out-Null
+          Invoke-WebRequest -Uri "$env:MIRROR_URL/claude-code/install.sh" -UseBasicParsing | Out-Null
+          Invoke-WebRequest -Uri "$env:MIRROR_URL/claude/install.sh" -UseBasicParsing | Out-Null
           Invoke-WebRequest -Uri "$env:MIRROR_URL/codex/install.sh" -UseBasicParsing | Out-Null
+          Invoke-WebRequest -Uri "$env:MIRROR_URL/gemini/install.sh" -UseBasicParsing | Out-Null
 
       - name: Run install tests (Unix)
         if: startsWith(matrix.os, 'macos')
@@ -100,8 +106,6 @@ jobs:
             install_deps: apk add --no-cache bash curl ca-certificates python3
     env:
       MIRROR_URL: ${{ github.event.inputs.mirror_url || secrets.MIRROR_PUBLIC_URL }}
-      SKIP_CLAUDE: "1"
-      SKIP_GEMINI: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -118,8 +122,20 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsSL "$MIRROR_URL/api/installer/info" >/dev/null
+          curl -fsSL "$MIRROR_URL/api/claude-code/info" >/dev/null
+          curl -fsSL "$MIRROR_URL/api/codex/info" >/dev/null
+          curl -fsSL "$MIRROR_URL/api/gemini/info" >/dev/null
+          curl -fsSL "$MIRROR_URL/claude-code/install.sh" >/dev/null
           curl -fsSL "$MIRROR_URL/codex/install.sh" >/dev/null
+          curl -fsSL "$MIRROR_URL/gemini/install.sh" >/dev/null
 
       - name: Run install tests in container
         run: |
-          docker run --rm             --platform ${{ matrix.platform }}             -e MIRROR_URL="$MIRROR_URL"             -e SKIP_CLAUDE="$SKIP_CLAUDE"             -e SKIP_GEMINI="$SKIP_GEMINI"             -e HOME="/tmp/home"             -v "$PWD:/work"             -w /work             ${{ matrix.image }}             /bin/sh -c "${{ matrix.install_deps }} && mkdir -p /tmp/home && cd /tmp/home && bash /work/.github/scripts/e2e-install-unix.sh"
+          docker run --rm \
+            --platform ${{ matrix.platform }} \
+            -e MIRROR_URL="$MIRROR_URL" \
+            -e HOME="/tmp/home" \
+            -v "$PWD:/work" \
+            -w /work \
+            ${{ matrix.image }} \
+            /bin/sh -c "${{ matrix.install_deps }} && mkdir -p /tmp/home && cd /tmp/home && bash /work/.github/scripts/e2e-install-unix.sh"

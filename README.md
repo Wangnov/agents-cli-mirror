@@ -93,9 +93,14 @@ curl -fsSL http://127.0.0.1:1357/api/codex/checksums
 # Unix shell
 curl -fsSL https://mirror.example.com/install/codex | bash
 curl -fsSL https://mirror.example.com/codex/install.sh | bash
+curl -fsSL https://mirror.example.com/claude-code/install.sh | bash
+curl -fsSL https://mirror.example.com/claude/install.sh | bash
+curl -fsSL https://mirror.example.com/gemini/install.sh | bash
 
 # PowerShell
 irm https://mirror.example.com/install/codex | iex
+irm https://mirror.example.com/install/claude-code | iex
+irm https://mirror.example.com/install/gemini | iex
 ```
 
 说明：上述脚本入口会先下载 `acm-installer`，再由它执行 `install/update/uninstall/status/doctor` 命令。
@@ -110,6 +115,15 @@ irm https://mirror.example.com/install/codex | iex
 - `/{provider}/{version}/files/{*filepath}`（大文件必须 R2 直出，不经 Worker/VPS 代理）
 
 核心点：制品对象在存储里的 key 形如 `/{provider}/versions/{version}/files/...`，但客户端对外下载路径是 `/{provider}/{version}/files/...`，因此需要在 Cloudflare 边缘做一次 URL Rewrite。
+
+当前内置的公开 provider 名称是：
+
+- `claude-code`
+- `codex`
+- `gemini`
+- `installer`
+
+注意：Claude 的规范 provider 名仍然是 `claude-code`；同时为了兼容用户习惯，公开安装入口也会额外发布 `/claude/*` 别名。
 
 #### A) Cloudflare / R2 侧配置
 

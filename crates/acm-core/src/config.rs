@@ -758,7 +758,7 @@ fn normalize_url_field(field: &str, value: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::{fs, io::Write};
     use tempfile::NamedTempFile;
 
     #[test]
@@ -1047,6 +1047,37 @@ tags = ["latest"]
         let err = Config::load(file.path()).unwrap_err();
         let msg = format!("{:#}", err);
         assert!(msg.contains("storage.s3.endpoint is required"));
+    }
+
+    #[test]
+    fn test_cloud_config_includes_all_public_cli_providers() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let config_path = repo_root.join("config.cloud.toml");
+        let cloud_config = fs::read_to_string(&config_path).expect("read config.cloud.toml");
+        toml::from_str::<toml::Value>(&cloud_config).expect("parse config.cloud.toml");
+
+        assert!(cloud_config.contains("name = \"claude-code\""));
+        assert!(cloud_config.contains("name = \"codex\""));
+        assert!(cloud_config.contains("name = \"gemini\""));
+        assert!(cloud_config.contains("name = \"installer\""));
+    }
+
+    #[test]
+    fn test_install_tests_workflow_covers_all_public_cli_providers() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let workflow_path = repo_root.join(".github/workflows/install-tests.yml");
+        let workflow = fs::read_to_string(&workflow_path).expect("read install-tests workflow");
+
+        assert!(workflow.contains("curl -fsSL \"$MIRROR_URL/claude-code/install.sh\" >/dev/null"));
+        assert!(workflow.contains("curl -fsSL \"$MIRROR_URL/claude/install.sh\" >/dev/null"));
+        assert!(workflow.contains("curl -fsSL \"$MIRROR_URL/codex/install.sh\" >/dev/null"));
+        assert!(workflow.contains("curl -fsSL \"$MIRROR_URL/gemini/install.sh\" >/dev/null"));
+        assert!(workflow.contains("Invoke-WebRequest -Uri \"$env:MIRROR_URL/claude-code/install.sh\" -UseBasicParsing | Out-Null"));
+        assert!(workflow.contains("Invoke-WebRequest -Uri \"$env:MIRROR_URL/claude/install.sh\" -UseBasicParsing | Out-Null"));
+        assert!(workflow.contains("Invoke-WebRequest -Uri \"$env:MIRROR_URL/codex/install.sh\" -UseBasicParsing | Out-Null"));
+        assert!(workflow.contains("Invoke-WebRequest -Uri \"$env:MIRROR_URL/gemini/install.sh\" -UseBasicParsing | Out-Null"));
+        assert!(!workflow.contains("SKIP_CLAUDE: \"1\""));
+        assert!(!workflow.contains("SKIP_GEMINI: \"1\""));
     }
 
     #[test]
