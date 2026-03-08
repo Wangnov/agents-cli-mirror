@@ -19,8 +19,11 @@ use reqwest::blocking::Client;
 use reqwest::{Proxy, StatusCode};
 use serde::Serialize;
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::process::Command;
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::Duration;
@@ -572,6 +575,15 @@ fn now_rfc3339() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
+const PATH_BLOCK_START: &str = "# >>> agents-cli-mirror PATH >>>";
+const PATH_BLOCK_END: &str = "# <<< agents-cli-mirror PATH <<<";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShellConfig {
+    Posix,
+    Fish,
+}
+
 fn ensure_writable_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path)?;
     let probe = path.join(".acm-write-probe");
@@ -580,30 +592,554 @@ fn ensure_writable_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn provider_binary_name(provider: &str) -> String {
+    if cfg!(windows) {
+        format!("{provider}.exe")
+    } else {
+        provider.to_string()
+    }
+}
+
+fn provider_bin_path(bin_dir: &Path, provider: &str) -> PathBuf {
+    bin_dir.join(provider_binary_name(provider))
+}
+
+fn legacy_provider_bin_path(install_dir: &Path, provider: &str) -> PathBuf {
+    install_dir.join("bin").join(provider_binary_name(provider))
+}
+
+fn installed_provider_is_healthy(
+    ctx: &InstallContext,
+    provider: &str,
+    installed: &InstalledProviderState,
+) -> bool {
+    Path::new(&installed.install_path).exists()
+        && Path::new(&installed.executable).exists()
+        && provider_bin_path(&ctx.bin_dir, provider).exists()
+}
+
 fn check_state_file(ctx: &InstallContext) -> Result<()> {
     if let Some(parent) = ctx.state_path.parent() {
         fs::create_dir_all(parent)?;
     }
     if !ctx.state_path.exists() {
-        fs::write(
-            &ctx.state_path,
-            toml::to_string_pretty(&ClientState::default())?,
-        )?;
+        save_client_state(&ctx.state_path, &ClientState::default())?;
     }
     let _ = fs::read_to_string(&ctx.state_path)?;
     Ok(())
 }
 
-fn check_bin_in_path(bin_dir: PathBuf) -> Result<()> {
-    let Some(path) = env::var_os("PATH") else {
-        bail!("PATH is not set");
+fn normalize_path_for_compare(path: &Path) -> String {
+    let value = path.to_string_lossy().to_string();
+    if cfg!(windows) {
+        value.to_ascii_lowercase()
+    } else {
+        value
+    }
+}
+
+fn path_entries_contain(path_var: &OsStr, target: &Path) -> bool {
+    let target = normalize_path_for_compare(target);
+    env::split_paths(path_var).any(|entry| normalize_path_for_compare(&entry) == target)
+}
+
+fn path_contains(target: &Path) -> bool {
+    env::var_os("PATH")
+        .as_deref()
+        .is_some_and(|path_var| path_entries_contain(path_var, target))
+}
+
+fn local_shim_dir(home: &Path) -> PathBuf {
+    home.join(".local").join("bin")
+}
+
+fn shell_rc_file(home: &Path) -> (PathBuf, ShellConfig) {
+    let shell = env::var("SHELL").unwrap_or_default();
+    let name = Path::new(&shell)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("");
+
+    match name {
+        "bash" => (home.join(".bashrc"), ShellConfig::Posix),
+        "zsh" => (home.join(".zshrc"), ShellConfig::Posix),
+        "fish" => (
+            home.join(".config").join("fish").join("config.fish"),
+            ShellConfig::Fish,
+        ),
+        _ => (home.join(".profile"), ShellConfig::Posix),
+    }
+}
+
+fn shell_rc_candidates(home: &Path) -> Vec<(PathBuf, ShellConfig)> {
+    let mut candidates = Vec::new();
+    let mut push = |path: PathBuf, shell: ShellConfig| {
+        if !candidates.iter().any(|(existing, _)| *existing == path) {
+            candidates.push((path, shell));
+        }
     };
 
-    if env::split_paths(&path).any(|item| item == bin_dir) {
+    let (preferred, preferred_kind) = shell_rc_file(home);
+    push(preferred, preferred_kind);
+    push(home.join(".bashrc"), ShellConfig::Posix);
+    push(home.join(".zshrc"), ShellConfig::Posix);
+    push(home.join(".zprofile"), ShellConfig::Posix);
+    push(home.join(".profile"), ShellConfig::Posix);
+    push(
+        home.join(".config").join("fish").join("config.fish"),
+        ShellConfig::Fish,
+    );
+    candidates
+}
+
+fn render_home_relative_path(home: &Path, path: &Path) -> String {
+    if let Ok(relative) = path.strip_prefix(home) {
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        return format!("$HOME/{relative}");
+    }
+
+    path.to_string_lossy().to_string()
+}
+
+fn shell_quote_single(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn render_path_block(home: &Path, bin_dir: &Path, shell: ShellConfig) -> String {
+    let path_ref = render_home_relative_path(home, bin_dir);
+
+    match shell {
+        ShellConfig::Posix => {
+            let dir_test = if path_ref.starts_with("$HOME/") {
+                format!("\"{path_ref}\"")
+            } else {
+                shell_quote_single(&path_ref)
+            };
+            let export_expr = if path_ref.starts_with("$HOME/") {
+                format!("\"{path_ref}:$PATH\"")
+            } else {
+                format!("{}:\"$PATH\"", shell_quote_single(&path_ref))
+            };
+            format!(
+                "{PATH_BLOCK_START}\nif [ -d {dir_test} ]; then\n  export PATH={export_expr}\nfi\n{PATH_BLOCK_END}\n"
+            )
+        }
+        ShellConfig::Fish => {
+            let dir_expr = if path_ref.starts_with("$HOME/") {
+                format!("\"{path_ref}\"")
+            } else {
+                shell_quote_single(&path_ref)
+            };
+            format!(
+                "{PATH_BLOCK_START}\nif test -d {dir_expr}\n    fish_add_path -m {dir_expr}\nend\n{PATH_BLOCK_END}\n"
+            )
+        }
+    }
+}
+
+fn strip_managed_path_block(content: &str) -> String {
+    let mut lines = Vec::new();
+    let mut skipping = false;
+    for line in content.lines() {
+        if line == PATH_BLOCK_START {
+            skipping = true;
+            continue;
+        }
+        if skipping && line == PATH_BLOCK_END {
+            skipping = false;
+            continue;
+        }
+        if !skipping {
+            lines.push(line);
+        }
+    }
+
+    let mut cleaned = lines.join("\n");
+    if !cleaned.is_empty() {
+        cleaned.push('\n');
+    }
+    cleaned
+}
+
+fn upsert_managed_path_block_content(
+    content: &str,
+    home: &Path,
+    bin_dir: &Path,
+    shell: ShellConfig,
+) -> String {
+    let cleaned = strip_managed_path_block(content);
+    let cleaned = cleaned.trim_end();
+    let block = render_path_block(home, bin_dir, shell);
+
+    if cleaned.is_empty() {
+        return block;
+    }
+
+    format!("{cleaned}\n\n{block}")
+}
+
+fn write_managed_path_block(
+    rc_file: &Path,
+    home: &Path,
+    bin_dir: &Path,
+    shell: ShellConfig,
+) -> Result<bool> {
+    if let Some(parent) = rc_file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let existing = fs::read_to_string(rc_file).unwrap_or_default();
+    let updated = upsert_managed_path_block_content(&existing, home, bin_dir, shell);
+    if updated == existing {
+        return Ok(false);
+    }
+
+    fs::write(rc_file, updated)?;
+    Ok(true)
+}
+
+fn remove_managed_path_blocks(home: &Path) -> Result<Vec<PathBuf>> {
+    let mut removed = Vec::new();
+
+    for (path, _) in shell_rc_candidates(home) {
+        if !path.exists() {
+            continue;
+        }
+        let existing = fs::read_to_string(&path)?;
+        let updated = strip_managed_path_block(&existing);
+        if updated != existing {
+            fs::write(&path, updated)?;
+            removed.push(path);
+        }
+    }
+
+    Ok(removed)
+}
+
+#[cfg(unix)]
+fn create_or_replace_symlink(target: &Path, link: &Path) -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    if fs::symlink_metadata(link).is_ok() {
+        fs::remove_file(link)?;
+    }
+    symlink(target, link)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_symlink_if_points_to(link: &Path, target: &Path) -> Result<bool> {
+    let metadata = match fs::symlink_metadata(link) {
+        Ok(metadata) => metadata,
+        Err(_) => return Ok(false),
+    };
+    if !metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+
+    let link_target = fs::read_link(link)?;
+    let resolved = if link_target.is_absolute() {
+        link_target
+    } else {
+        link.parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(link_target)
+    };
+
+    if normalize_path_for_compare(&resolved) != normalize_path_for_compare(target) {
+        return Ok(false);
+    }
+
+    fs::remove_file(link)?;
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn setup_unix_path(bin_dir: &Path, provider: &str, ui: &Ui) -> Result<()> {
+    let home = dirs_home()?;
+    if path_contains(bin_dir) {
         return Ok(());
     }
 
-    bail!("{} is not in PATH", bin_dir.display())
+    let shim_dir = local_shim_dir(&home);
+    let binary = provider_binary_name(provider);
+    if path_contains(&shim_dir) {
+        fs::create_dir_all(&shim_dir)?;
+        let shim_path = shim_dir.join(&binary);
+        create_or_replace_symlink(&provider_bin_path(bin_dir, provider), &shim_path)?;
+        ui.success(&format!(
+            "{} {}",
+            tr(ui.lang(), "symlink_created"),
+            shim_path.display()
+        ));
+        return Ok(());
+    }
+
+    let (rc_file, shell) = shell_rc_file(&home);
+    if write_managed_path_block(&rc_file, &home, bin_dir, shell)? {
+        ui.info(&format!(
+            "{} {}",
+            tr(ui.lang(), "path_added"),
+            rc_file.display()
+        ));
+        ui.warn(tr(ui.lang(), "restart_terminal"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn cleanup_unix_path(bin_dir: &Path, install_dir: &Path, provider: &str, ui: &Ui) -> Result<()> {
+    let home = dirs_home()?;
+    let shim_path = local_shim_dir(&home).join(provider_binary_name(provider));
+    let expected = provider_bin_path(bin_dir, provider);
+    let legacy = legacy_provider_bin_path(install_dir, provider);
+
+    if remove_symlink_if_points_to(&shim_path, &expected)?
+        || remove_symlink_if_points_to(&shim_path, &legacy)?
+    {
+        ui.info(&format!(
+            "{} {}",
+            tr(ui.lang(), "symlink_removed"),
+            shim_path.display()
+        ));
+    }
+
+    for path in remove_managed_path_blocks(&home)? {
+        ui.info(&format!(
+            "{} {}",
+            tr(ui.lang(), "path_removed"),
+            path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn read_windows_user_path() -> Result<String> {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "[Environment]::GetEnvironmentVariable('Path','User')",
+        ])
+        .output()
+        .context("read Windows user PATH failed")?;
+    if !output.status.success() {
+        bail!("read Windows user PATH failed");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(windows)]
+fn write_windows_user_path(path_value: &str) -> Result<()> {
+    let escaped = path_value.replace('\'', "''");
+    let script = format!("[Environment]::SetEnvironmentVariable('Path', '{escaped}', 'User')");
+    let status = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .status()
+        .context("write Windows user PATH failed")?;
+    if !status.success() {
+        bail!("write Windows user PATH failed");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn split_windows_path(path_value: &str) -> Vec<String> {
+    path_value
+        .split(';')
+        .filter(|entry| !entry.trim().is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+#[cfg(windows)]
+fn setup_windows_path(bin_dir: &Path, ui: &Ui) -> Result<()> {
+    let bin_dir = bin_dir
+        .canonicalize()
+        .unwrap_or_else(|_| bin_dir.to_path_buf());
+    let bin_key = normalize_path_for_compare(&bin_dir);
+
+    let current_user = read_windows_user_path().unwrap_or_default();
+    let mut user_entries = split_windows_path(&current_user);
+    if !user_entries
+        .iter()
+        .any(|entry| normalize_path_for_compare(Path::new(entry)) == bin_key)
+    {
+        user_entries.insert(0, bin_dir.display().to_string());
+        let new_user_path = user_entries.join(";");
+        write_windows_user_path(&new_user_path)?;
+        ui.info(&format!(
+            "{} {}",
+            tr(ui.lang(), "path_added"),
+            bin_dir.display()
+        ));
+        ui.warn(tr(ui.lang(), "restart_terminal"));
+    }
+
+    if !path_contains(&bin_dir) {
+        let current = env::var("PATH").unwrap_or_default();
+        let updated = if current.is_empty() {
+            bin_dir.display().to_string()
+        } else {
+            format!("{};{current}", bin_dir.display())
+        };
+        unsafe {
+            env::set_var("PATH", &updated);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn cleanup_windows_path(bin_dir: &Path, ui: &Ui) -> Result<()> {
+    let bin_dir = bin_dir
+        .canonicalize()
+        .unwrap_or_else(|_| bin_dir.to_path_buf());
+    let bin_key = normalize_path_for_compare(&bin_dir);
+
+    let current_user = read_windows_user_path().unwrap_or_default();
+    let user_entries = split_windows_path(&current_user);
+    let filtered_entries = user_entries
+        .iter()
+        .filter(|entry| normalize_path_for_compare(Path::new(entry)) != bin_key)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if filtered_entries.len() != user_entries.len() {
+        let new_user_path = filtered_entries.join(";");
+        write_windows_user_path(&new_user_path)?;
+        ui.info(&format!(
+            "{} {}",
+            tr(ui.lang(), "path_removed"),
+            bin_dir.display()
+        ));
+        ui.warn(tr(ui.lang(), "restart_terminal"));
+    }
+
+    if let Some(path_var) = env::var_os("PATH") {
+        let filtered = env::split_paths(&path_var)
+            .filter(|entry| normalize_path_for_compare(entry) != bin_key)
+            .collect::<Vec<_>>();
+        let updated = env::join_paths(filtered).unwrap_or_default();
+        unsafe {
+            env::set_var("PATH", updated);
+        }
+    }
+
+    Ok(())
+}
+
+fn setup_path(bin_dir: &Path, provider: &str, no_modify_path: bool, ui: &Ui) -> Result<()> {
+    if no_modify_path {
+        return Ok(());
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = provider;
+        return setup_windows_path(bin_dir, ui);
+    }
+
+    #[cfg(unix)]
+    {
+        return setup_unix_path(bin_dir, provider, ui);
+    }
+
+    #[allow(unreachable_code)]
+    Ok(())
+}
+
+fn cleanup_path(bin_dir: &Path, install_dir: &Path, provider: &str, ui: &Ui) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let _ = install_dir;
+        let _ = provider;
+        return cleanup_windows_path(bin_dir, ui);
+    }
+
+    #[cfg(unix)]
+    {
+        return cleanup_unix_path(bin_dir, install_dir, provider, ui);
+    }
+
+    #[allow(unreachable_code)]
+    Ok(())
+}
+
+fn find_command_in_path(binary: &str) -> Option<PathBuf> {
+    let path_var = env::var_os("PATH")?;
+    for entry in env::split_paths(&path_var) {
+        let candidate = entry.join(binary);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn check_bin_in_path(bin_dir: &Path) -> Result<String> {
+    if path_contains(bin_dir) {
+        return Ok(format!("bin dir detected in PATH: {}", bin_dir.display()));
+    }
+
+    #[cfg(unix)]
+    {
+        let shim_dir = local_shim_dir(&dirs_home()?);
+        if path_contains(&shim_dir) {
+            return Ok(format!("shim dir detected in PATH: {}", shim_dir.display()));
+        }
+    }
+
+    bail!("{} is not reachable from PATH", bin_dir.display())
+}
+
+fn check_command_resolution(ctx: &InstallContext, state: &ClientState) -> Result<String> {
+    if state.installed.is_empty() {
+        return Ok("no installed providers".to_string());
+    }
+
+    let mut details = Vec::new();
+    #[cfg(unix)]
+    let shim_dir = local_shim_dir(&dirs_home()?);
+
+    for (provider, installed) in &state.installed {
+        if !installed_provider_is_healthy(ctx, provider, installed) {
+            bail!("{provider} state exists but installed files are missing");
+        }
+
+        let binary = provider_binary_name(provider);
+        let actual = find_command_in_path(&binary)
+            .ok_or_else(|| anyhow!("{provider} is not resolvable from PATH"))?;
+        let expected = provider_bin_path(&ctx.bin_dir, provider);
+
+        let matches_expected =
+            normalize_path_for_compare(&actual) == normalize_path_for_compare(&expected) || {
+                #[cfg(unix)]
+                {
+                    let shim = shim_dir.join(&binary);
+                    normalize_path_for_compare(&actual) == normalize_path_for_compare(&shim)
+                }
+                #[cfg(not(unix))]
+                {
+                    false
+                }
+            };
+
+        if !matches_expected {
+            bail!(
+                "{provider} resolves to {} instead of {}",
+                actual.display(),
+                expected.display()
+            );
+        }
+
+        details.push(format!("{provider} -> {}", actual.display()));
+    }
+
+    Ok(details.join(", "))
 }
 
 fn check_mirror_health(client: &Client, retries: u32, mirror_url: &str) -> Result<String> {
@@ -927,5 +1463,70 @@ mod tests {
         let state_path = resolve_state_path(&install_dir);
 
         assert_eq!(state_path, install_dir.join("state.toml"));
+    }
+
+    #[test]
+    fn render_path_block_uses_home_relative_path_for_posix_shells() {
+        let home = PathBuf::from("/tmp/test-home");
+        let bin_dir = home.join(".agents").join("bin");
+
+        let block = render_path_block(&home, &bin_dir, ShellConfig::Posix);
+
+        assert!(block.contains("export PATH=\"$HOME/.agents/bin:$PATH\""));
+    }
+
+    #[test]
+    fn upsert_managed_path_block_replaces_existing_block() {
+        let home = PathBuf::from("/tmp/test-home");
+        let bin_dir = home.join(".agents").join("bin");
+        let original = format!(
+            "line-1\n{}\nold\n{}\nline-2\n",
+            PATH_BLOCK_START, PATH_BLOCK_END
+        );
+
+        let updated =
+            upsert_managed_path_block_content(&original, &home, &bin_dir, ShellConfig::Posix);
+
+        assert!(updated.contains("line-1"));
+        assert!(updated.contains("line-2"));
+        assert_eq!(updated.matches(PATH_BLOCK_START).count(), 1);
+        assert!(updated.contains("export PATH=\"$HOME/.agents/bin:$PATH\""));
+    }
+
+    #[test]
+    fn installed_provider_is_healthy_requires_current_bin_and_install_root() {
+        let temp_dir = TempDir::new().expect("create temp dir");
+        let install_dir = temp_dir.path().join(".acm");
+        let bin_dir = temp_dir.path().join(".agents").join("bin");
+        let install_path = install_dir.join("providers").join("codex").join("v1");
+        let executable = install_path.join("codex");
+        fs::create_dir_all(&install_path).expect("create install path");
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        fs::write(&executable, b"codex").expect("write executable");
+        fs::write(bin_dir.join("codex"), b"shim").expect("write bin");
+
+        let installed = InstalledProviderState {
+            version: "v1".to_string(),
+            tag: "latest".to_string(),
+            installed_at: "2026-01-01T00:00:00Z".to_string(),
+            executable: executable.to_string_lossy().to_string(),
+            install_path: install_path.to_string_lossy().to_string(),
+            ui_preset: Some("acm".to_string()),
+        };
+
+        let ctx = InstallContext {
+            mirror_url: None,
+            install_dir: install_dir.clone(),
+            bin_dir: bin_dir.clone(),
+            cache_dir: install_dir.join("cache"),
+            state_path: install_dir.join("state.toml"),
+            client: build_client(None, false, 3, 30).expect("build client"),
+            retries: 1,
+        };
+
+        assert!(installed_provider_is_healthy(&ctx, "codex", &installed));
+
+        fs::remove_file(bin_dir.join("codex")).expect("remove bin");
+        assert!(!installed_provider_is_healthy(&ctx, "codex", &installed));
     }
 }

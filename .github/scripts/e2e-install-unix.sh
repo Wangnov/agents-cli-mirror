@@ -6,6 +6,8 @@ if [[ -z "${MIRROR_URL:-}" ]]; then
   exit 1
 fi
 export MIRROR_URL
+export PATH="$HOME/.local/bin:$PATH"
+mkdir -p "$HOME/.local/bin"
 
 is_musl() {
   if command -v ldd >/dev/null 2>&1; then
@@ -75,34 +77,49 @@ PY
 run_cli() {
   local name="$1"
   local cmd="$2"
+  local install_root="$HOME/.acm"
   local bin_path="$HOME/.agents/bin/$cmd"
+  local shim_path="$HOME/.local/bin/$cmd"
   shift 2
   local uninstall_args=("$@")
 
   echo "==> Installing $name"
   curl -fsSL "$MIRROR_URL/install/$name" >/dev/null
-  curl -fsSL "$MIRROR_URL/install/$name" | MIRROR_URL="$MIRROR_URL" bash -s -- --install-dir "$HOME/.agents" --no-modify-path
+  curl -fsSL "$MIRROR_URL/install/$name" | MIRROR_URL="$MIRROR_URL" bash -s --
+
+  echo "==> Resolve check: $cmd"
+  resolved_bin="$(command -v "$cmd" || true)"
+  if [[ -z "$resolved_bin" ]]; then
+    echo "PATH check failed: $cmd not found" >&2
+    exit 1
+  fi
+  if [[ "$resolved_bin" != "$shim_path" && "$resolved_bin" != "$bin_path" ]]; then
+    echo "PATH check failed: $cmd resolved to unexpected path $resolved_bin" >&2
+    exit 1
+  fi
 
   if [[ "$cmd" == "codex" ]]; then
     echo "==> Help check: $cmd"
-    "$bin_path" --help >/dev/null
+    "$cmd" --help >/dev/null
   else
     echo "==> Version check: $cmd"
-    "$bin_path" --version || "$bin_path" -V
+    "$cmd" --version || "$cmd" -V
 
     echo "==> TUI check: $cmd"
-    tui_check "$bin_path"
+    tui_check "$resolved_bin"
   fi
+
+  test -f "$install_root/state.toml"
 
   echo "==> Uninstalling $name"
   curl -fsSL "$MIRROR_URL/uninstall/$name" >/dev/null
   if [[ ${#uninstall_args[@]} -gt 0 ]]; then
-    curl -fsSL "$MIRROR_URL/uninstall/$name" | MIRROR_URL="$MIRROR_URL" bash -s -- --install-dir "$HOME/.agents" "${uninstall_args[@]}"
+    curl -fsSL "$MIRROR_URL/uninstall/$name" | MIRROR_URL="$MIRROR_URL" bash -s -- "${uninstall_args[@]}"
   else
-    curl -fsSL "$MIRROR_URL/uninstall/$name" | MIRROR_URL="$MIRROR_URL" bash -s -- --install-dir "$HOME/.agents"
+    curl -fsSL "$MIRROR_URL/uninstall/$name" | MIRROR_URL="$MIRROR_URL" bash -s --
   fi
 
-  if [[ -e "$bin_path" || -L "$bin_path" ]]; then
+  if [[ -e "$bin_path" || -L "$bin_path" || -e "$shim_path" || -L "$shim_path" || -e "$install_root/bin/$cmd" || -L "$install_root/bin/$cmd" ]]; then
     echo "Uninstall check failed: $cmd still exists" >&2
     exit 1
   fi

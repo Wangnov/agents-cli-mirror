@@ -13,6 +13,11 @@ pub(super) fn command_install(
         .as_deref()
         .filter(|value| !value.trim().is_empty());
     let mut state = load_state(ctx)?;
+    let installed = state
+        .installed
+        .get(&provider)
+        .filter(|installed| installed_provider_is_healthy(ctx, &provider, installed))
+        .cloned();
     let configured_theme = configured_provider_theme(config, &provider);
     let theme = configured_theme
         .or_else(|| {
@@ -46,7 +51,7 @@ pub(super) fn command_install(
     };
 
     if args.check {
-        if let Some(installed) = state.installed.get(&provider) {
+        if let Some(installed) = installed.as_ref() {
             if installed.version == version {
                 ui.success(&format!("{} {}", provider, installed.version));
             } else {
@@ -61,10 +66,11 @@ pub(super) fn command_install(
         return Ok(());
     }
 
-    if let Some(installed) = state.installed.get(&provider)
+    if let Some(installed) = installed.as_ref()
         && installed.version == version
         && !args.upgrade
     {
+        setup_path(&ctx.bin_dir, &provider, args.no_modify_path, &ui)?;
         ui.success(&format!("{} already at {}", provider, version));
         return Ok(());
     }
@@ -116,6 +122,7 @@ pub(super) fn command_install(
         &tag,
         Some(install_result.bin_path.clone()),
     );
+    setup_path(&ctx.bin_dir, &provider, args.no_modify_path, &ui)?;
     ui.success(&format!("{} installed {}", provider, version));
 
     if !args.no_modify_path {
@@ -408,6 +415,7 @@ pub(super) fn command_uninstall(
         install_path: Path::new(&installed.install_path),
         bin_dir: &ctx.bin_dir,
     })?;
+    cleanup_path(&ctx.bin_dir, &ctx.install_dir, &provider, &ui)?;
 
     set_runtime_record(
         &mut state,
@@ -493,6 +501,7 @@ pub(super) fn command_status(ctx: &InstallContext, args: StatusArgs) -> Result<(
 
 pub(super) fn command_doctor(ctx: &InstallContext, config: &LocalConfig) -> Result<()> {
     let mut checks = Vec::new();
+    let state = load_state(ctx).unwrap_or_default();
 
     checks.push(check_doctor(
         "platform_detection",
@@ -516,7 +525,12 @@ pub(super) fn command_doctor(ctx: &InstallContext, config: &LocalConfig) -> Resu
 
     checks.push(check_doctor(
         "bin_dir_in_path",
-        check_bin_in_path(ctx.bin_dir.clone()).map(|_| "bin dir detected in PATH".to_string()),
+        check_bin_in_path(&ctx.bin_dir),
+    ));
+
+    checks.push(check_doctor(
+        "command_resolution",
+        check_command_resolution(ctx, &state),
     ));
 
     if let Some(mirror) = &ctx.mirror_url {
@@ -550,7 +564,8 @@ pub(super) fn command_doctor(ctx: &InstallContext, config: &LocalConfig) -> Resu
         }
     }
 
-    if let Ok(mut state) = load_state(ctx) {
+    {
+        let mut state = state;
         set_runtime_record(
             &mut state,
             RuntimeOp::Doctor,

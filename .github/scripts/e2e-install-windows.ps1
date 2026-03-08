@@ -5,8 +5,8 @@ if (-not $env:MIRROR_URL) {
     throw "MIRROR_URL is required"
 }
 
-$InstallDir = "$env:USERPROFILE\.agents"
-$BinDir = "$InstallDir\bin"
+$InstallRoot = "$env:USERPROFILE\.acm"
+$BinDir = "$env:USERPROFILE\.agents\bin"
 
 function Invoke-TuiCheck {
     param(
@@ -38,20 +38,30 @@ function Run-Cli {
     $installScript = Join-Path $env:TEMP ("acm-install-" + $Name + "-" + [guid]::NewGuid().ToString("N") + ".ps1")
     Invoke-WebRequest -Uri "$env:MIRROR_URL/$Name/install.ps1" -UseBasicParsing -OutFile $installScript
     try {
-        & $installScript @("--install-dir", $InstallDir, "--no-modify-path")
+        & $installScript
     } finally {
         Remove-Item -Force -ErrorAction SilentlyContinue $installScript
     }
 
+    $resolved = Get-Command $Name -ErrorAction Stop
+    if ($resolved.Source -ne $Bin) {
+        throw "PATH check failed: $Name resolved to $($resolved.Source), expected $Bin"
+    }
+
     if ($Name -eq "codex") {
-        Write-Host "==> Help check: $Bin"
-        & $Bin --help | Out-Null
+        Write-Host "==> Help check: $Name"
+        & $Name --help | Out-Null
     } else {
-        Write-Host "==> Version check: $Bin"
-        & $Bin --version
+        Write-Host "==> Version check: $Name"
+        & $Name --version
 
         Write-Host "==> TUI check: $Bin"
         Invoke-TuiCheck $Bin
+    }
+
+    $statePath = Join-Path $InstallRoot "state.toml"
+    if (-not (Test-Path $statePath)) {
+        throw "State file missing: $statePath"
     }
 
     Write-Host "==> Uninstalling $Name"
@@ -61,7 +71,7 @@ function Run-Cli {
     $uninstallScript = Join-Path $env:TEMP ("acm-uninstall-" + $Name + "-" + [guid]::NewGuid().ToString("N") + ".ps1")
     Invoke-WebRequest -Uri "$env:MIRROR_URL/$Name/uninstall.ps1" -UseBasicParsing -OutFile $uninstallScript
     try {
-        & $uninstallScript @("--install-dir", $InstallDir) @UninstallArgs
+        & $uninstallScript @UninstallArgs
     } finally {
         Remove-Item -Force -ErrorAction SilentlyContinue $uninstallScript
     }
@@ -72,6 +82,10 @@ function Run-Cli {
     }
     if (Test-Path $Bin) {
         throw "Uninstall check failed: $Bin still exists"
+    }
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($userPath -like "*$BinDir*") {
+        throw "Uninstall check failed: $BinDir still in user PATH"
     }
 }
 

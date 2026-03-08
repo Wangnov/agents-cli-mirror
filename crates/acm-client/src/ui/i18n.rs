@@ -47,6 +47,11 @@ pub fn tr(lang: Lang, key: &str) -> &'static str {
             "extracting" => "正在解压",
             "installer" => "安装程序",
             "complete" => "安装完成!",
+            "path_added" => "已写入 PATH 配置",
+            "path_removed" => "已移除 PATH 配置",
+            "symlink_created" => "已创建命令入口",
+            "symlink_removed" => "已移除命令入口",
+            "restart_terminal" => "请重启终端或重新加载 shell 配置后再使用",
             _ => "",
         },
         Lang::En => match key {
@@ -55,6 +60,11 @@ pub fn tr(lang: Lang, key: &str) -> &'static str {
             "extracting" => "Extracting",
             "installer" => "Installer",
             "complete" => "Installation Complete!",
+            "path_added" => "PATH updated in",
+            "path_removed" => "PATH entry removed from",
+            "symlink_created" => "Command shim created at",
+            "symlink_removed" => "Command shim removed from",
+            "restart_terminal" => "Restart or reload your shell to pick up PATH changes",
             _ => "",
         },
     }

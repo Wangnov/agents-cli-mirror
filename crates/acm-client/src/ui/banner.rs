@@ -31,24 +31,28 @@ pub fn print_banner(ui: &Ui, title: &str) {
         "  {}{}{}",
         style.dim, banner.gui_install, style.reset
     ));
-    lines.push(String::new());
-    lines.push(format!(
-        "  {}{}:{}",
-        style.dim, banner.app_url_label, style.reset
-    ));
-    lines.push(format!(
-        "  {}{}{} ({})",
-        style.gold, brand.app_url, style.reset, brand.app_name
-    ));
-    lines.push(String::new());
-    lines.push(format!(
-        "  {}{}:{}",
-        style.dim, banner.service_label, style.reset
-    ));
-    lines.push(format!(
-        "  {}{}{}",
-        style.gold, brand.service_url, style.reset
-    ));
+    if brand.has_app_url() {
+        lines.push(String::new());
+        lines.push(format!(
+            "  {}{}:{}",
+            style.dim, banner.app_url_label, style.reset
+        ));
+        lines.push(format!(
+            "  {}{}{} ({})",
+            style.gold, brand.app_url, style.reset, brand.app_name
+        ));
+    }
+    if brand.has_service_url() {
+        lines.push(String::new());
+        lines.push(format!(
+            "  {}{}:{}",
+            style.dim, banner.service_label, style.reset
+        ));
+        lines.push(format!(
+            "  {}{}{}",
+            style.gold, brand.service_url, style.reset
+        ));
+    }
 
     println!();
     let logo_lines = {

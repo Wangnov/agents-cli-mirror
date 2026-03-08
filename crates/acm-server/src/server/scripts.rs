@@ -231,14 +231,19 @@ if [[ -z "$MIRROR_URL" ]]; then
     exit 1
 fi
 
+PYTHON=""
 if command -v python3 >/dev/null 2>&1; then
     PYTHON="python3"
 elif command -v python >/dev/null 2>&1; then
     PYTHON="python"
-else
-    echo "python3 (or python) is required" >&2
+elif ! command -v jq >/dev/null 2>&1; then
+    echo "python3/python or jq is required" >&2
     exit 1
 fi
+
+curl_fetch() {{
+    curl -fsSL "${{CURL_RETRY_ARGS[@]}}" "$@"
+}}
 
 detect_platform() {{
     local os arch libc=""
@@ -317,38 +322,26 @@ PY
 }}
 
 url_encode_path() {{
-    "$PYTHON" - "$1" <<'PY'
+    if [[ -n "$PYTHON" ]]; then
+        "$PYTHON" - "$1" <<'PY'
 import sys
 from urllib.parse import quote
 value = sys.argv[1]
 print('/'.join(quote(seg, safe='') for seg in value.split('/')))
 PY
-}}
-
-calc_sha256() {{
-    local file="$1"
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$file" | awk '{{print $1}}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$file" | awk '{{print $1}}'
     else
-        echo "sha256sum or shasum is required" >&2
-        exit 1
+        jq -rn --arg value "$1" '$value | split("/") | map(@uri) | join("/")'
     fi
 }}
 
-normalize_lower() {{
-    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
-}}
+resolve_installer_meta() {{
+    local checksums_json="$1"
+    local version="$2"
+    local platform="$3"
+    local bin_name="$4"
 
-PLATFORM="$(detect_platform)"
-
-if [[ -z "$INSTALLER_VERSION" ]]; then
-    INSTALLER_VERSION="$(curl -fsSL "$MIRROR_URL/$INSTALLER_PROVIDER/$INSTALLER_TAG" | tr -d '\r\n')"
-fi
-
-CHECKSUMS_JSON="$(curl -fsSL "$MIRROR_URL/api/$INSTALLER_PROVIDER/checksums")"
-INSTALLER_META_RAW="$("$PYTHON" - "$CHECKSUMS_JSON" "$INSTALLER_VERSION" "$PLATFORM" "$BIN_NAME" <<'PY'
+    if [[ -n "$PYTHON" ]]; then
+        "$PYTHON" - "$checksums_json" "$version" "$platform" "$bin_name" <<'PY'
 import json, sys
 checksums = json.loads(sys.argv[1])
 version = sys.argv[2]
@@ -414,7 +407,70 @@ if not filename or not sha256:
 print(filename)
 print(sha256)
 PY
-)"
+    else
+        printf '%s' "$checksums_json" | jq -r \
+            --arg version "$version" \
+            --arg platform "$platform" \
+            --arg bin_name "$bin_name" '
+                .[$version] as $versions
+                | if ($versions | type) != "object" then error("installer version not found in checksums") else . end
+                | ($versions[$platform] // $versions["universal"] // (($versions | to_entries | .[0].value)?)) as $entry
+                | if ($entry | type) != "object" then error("invalid checksum entry") else . end
+                | ($entry.files // null) as $files
+                | if ($files | type) == "object" and ($files | length) > 0 then
+                    ($files | keys | sort) as $candidates
+                    | ([ $candidates[] | select(
+                        . == $bin_name
+                        or . == ($bin_name + ".exe")
+                        or startswith($bin_name + "-")
+                        or startswith($bin_name + ".")
+                    ) ]) as $preferred
+                    | (if ($preferred | length) > 0 then $preferred else $candidates end) as $selected
+                    | def installable_priority:
+                        ascii_downcase as $lower
+                        | if ($lower | endswith(".sha256")) or ($lower | endswith(".sum")) or ($lower | endswith(".json")) then 99
+                          elif ($platform | contains("windows")) and ($lower | endswith(".zip")) then 0
+                          elif ($platform | contains("windows")) and ($lower | endswith(".exe")) then 1
+                          elif ($platform | contains("windows")) then 99
+                          elif $lower | endswith(".tar.gz") then 0
+                          elif $lower | endswith(".tgz") then 1
+                          elif $lower | endswith(".tar.xz") then 2
+                          elif $lower | endswith(".zip") then 3
+                          elif ($lower | contains(".") | not) then 4
+                          else 99 end;
+                    | ($selected | min_by([(if contains($platform) then 0 else 1 end), installable_priority, .])) as $filename
+                    | $filename, ($files[$filename].sha256 // $entry.sha256)
+                  else
+                    ($entry.filename // error("installer filename or sha256 missing")),
+                    ($entry.sha256 // error("installer filename or sha256 missing"))
+                  end'
+    fi
+}}
+
+calc_sha256() {{
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{{print $1}}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{{print $1}}'
+    else
+        echo "sha256sum or shasum is required" >&2
+        exit 1
+    fi
+}}
+
+normalize_lower() {{
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}}
+
+PLATFORM="$(detect_platform)"
+
+if [[ -z "$INSTALLER_VERSION" ]]; then
+    INSTALLER_VERSION="$(curl_fetch "$MIRROR_URL/$INSTALLER_PROVIDER/$INSTALLER_TAG" | tr -d '\r\n')"
+fi
+
+CHECKSUMS_JSON="$(curl_fetch "$MIRROR_URL/api/$INSTALLER_PROVIDER/checksums")"
+INSTALLER_META_RAW="$(resolve_installer_meta "$CHECKSUMS_JSON" "$INSTALLER_VERSION" "$PLATFORM" "$BIN_NAME")"
 
 INSTALLER_FILE=""
 EXPECTED_SHA256=""
@@ -452,7 +508,7 @@ fi
 
 if [[ ! -f "$CACHE_ARCHIVE" ]]; then
     TMP_ARCHIVE="$TMP_DIR/$ARCHIVE_BASENAME"
-    curl -fsSL "$MIRROR_URL/$INSTALLER_PROVIDER/$INSTALLER_VERSION/files/$ENCODED_FILE" -o "$TMP_ARCHIVE"
+    curl_fetch "$MIRROR_URL/$INSTALLER_PROVIDER/$INSTALLER_VERSION/files/$ENCODED_FILE" -o "$TMP_ARCHIVE"
     ACTUAL_SHA256="$(calc_sha256 "$TMP_ARCHIVE")"
     if [[ "$(normalize_lower "$ACTUAL_SHA256")" != "$(normalize_lower "$EXPECTED_SHA256")" ]]; then
         echo "Checksum mismatch: expected $EXPECTED_SHA256, got $ACTUAL_SHA256" >&2
@@ -539,6 +595,40 @@ if (-not $MirrorUrl) {{
     throw "MIRROR_URL is required"
 }}
 
+function Invoke-TextRequest([string]$Uri) {{
+    for ($attempt = 1; $attempt -le 3; $attempt++) {{
+        try {{
+            return (Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec 10).Content
+        }} catch {{
+            if ($attempt -eq 3) {{ throw }}
+            Start-Sleep -Seconds 1
+        }}
+    }}
+}}
+
+function Invoke-JsonRequest([string]$Uri) {{
+    for ($attempt = 1; $attempt -le 3; $attempt++) {{
+        try {{
+            return Invoke-RestMethod -Uri $Uri -TimeoutSec 10
+        }} catch {{
+            if ($attempt -eq 3) {{ throw }}
+            Start-Sleep -Seconds 1
+        }}
+    }}
+}}
+
+function Invoke-FileRequest([string]$Uri, [string]$OutFile) {{
+    for ($attempt = 1; $attempt -le 3; $attempt++) {{
+        try {{
+            Invoke-WebRequest -Uri $Uri -OutFile $OutFile -TimeoutSec 10
+            return
+        }} catch {{
+            if ($attempt -eq 3) {{ throw }}
+            Start-Sleep -Seconds 1
+        }}
+    }}
+}}
+
 $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLower()
 switch ($arch) {{
     "x64" {{ $Platform = "x86_64-pc-windows-msvc" }}
@@ -547,10 +637,10 @@ switch ($arch) {{
 }}
 
 if (-not $InstallerVersion) {{
-    $InstallerVersion = (Invoke-RestMethod "$MirrorUrl/$InstallerProvider/$InstallerTag").ToString().Trim()
+    $InstallerVersion = (Invoke-TextRequest "$MirrorUrl/$InstallerProvider/$InstallerTag").ToString().Trim()
 }}
 
-$Checksums = Invoke-RestMethod "$MirrorUrl/api/$InstallerProvider/checksums"
+$Checksums = Invoke-JsonRequest "$MirrorUrl/api/$InstallerProvider/checksums"
 $VersionNode = $Checksums.$InstallerVersion
 if (-not $VersionNode) {{ throw "installer version not found in checksums" }}
 
@@ -610,7 +700,7 @@ try {{
 
     if (-not (Test-Path $CacheArchivePath)) {{
         $ArchivePath = Join-Path $TempDir $ArchiveName
-        Invoke-WebRequest -Uri "$MirrorUrl/$InstallerProvider/$InstallerVersion/files/$EncodedFile" -OutFile $ArchivePath
+        Invoke-FileRequest "$MirrorUrl/$InstallerProvider/$InstallerVersion/files/$EncodedFile" $ArchivePath
         $ActualSha256 = (Get-FileHash $ArchivePath -Algorithm SHA256).Hash.ToLower()
         if ($ActualSha256 -ne $ExpectedSha256.ToLower()) {{
             throw "Checksum mismatch: expected $ExpectedSha256, got $ActualSha256"

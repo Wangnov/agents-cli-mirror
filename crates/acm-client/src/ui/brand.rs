@@ -51,6 +51,24 @@ impl BrandSection {
             Lang::En => &self.banner.en,
         }
     }
+
+    pub fn has_app_url(&self) -> bool {
+        !is_placeholder_url(&self.app_url)
+    }
+
+    pub fn has_service_url(&self) -> bool {
+        !is_placeholder_url(&self.service_url)
+    }
+}
+
+fn is_placeholder_url(url: &str) -> bool {
+    matches!(
+        url.trim(),
+        "" | "https://example.com"
+            | "http://example.com"
+            | "https://mirror.example.com"
+            | "http://mirror.example.com"
+    )
 }
 
 static BRAND: OnceLock<BrandSection> = OnceLock::new();
