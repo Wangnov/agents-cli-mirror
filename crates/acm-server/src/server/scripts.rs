@@ -203,6 +203,7 @@ INSTALLER_VERSION="${{INSTALLER_VERSION:-}}"
 BIN_NAME="{installer_bin}"
 DEFAULT_CACHE_ROOT="${{XDG_CACHE_HOME:-$HOME/.cache}}/acm-installer"
 CACHE_ROOT="${{ACM_INSTALLER_CACHE_DIR:-$DEFAULT_CACHE_ROOT}}"
+CURL_RETRY_ARGS=(--retry 3 --retry-delay 1 --connect-timeout 10)
 
 FORWARD_ARGS=()
 while [[ $# -gt 0 ]]; do
@@ -548,6 +549,15 @@ fn render_ps1(
     } else {
         String::new()
     };
+    let session_path_line = match command {
+        ScriptCommand::Install | ScriptCommand::Update => {
+            "        Update-SessionPath -BinDir $SessionBinDir -Present $true\n"
+        }
+        ScriptCommand::Uninstall => {
+            "        Update-SessionPath -BinDir $SessionBinDir -Present $false\n"
+        }
+        ScriptCommand::Status | ScriptCommand::Doctor => "",
+    };
 
     format!(
         r#"Param(
@@ -563,6 +573,8 @@ $InstallerProvider = if ($env:INSTALLER_PROVIDER) {{ $env:INSTALLER_PROVIDER }} 
 $InstallerTag = if ($env:INSTALLER_TAG) {{ $env:INSTALLER_TAG }} else {{ "latest" }}
 $InstallerVersion = if ($env:INSTALLER_VERSION) {{ $env:INSTALLER_VERSION }} else {{ "" }}
 $InstallerBin = "{installer_bin}"
+$ExplicitInstallDir = $null
+$NoModifyPath = $false
 $CacheRoot = if ($env:ACM_INSTALLER_CACHE_DIR) {{
     $env:ACM_INSTALLER_CACHE_DIR
 }} elseif ($env:LOCALAPPDATA) {{
@@ -584,6 +596,15 @@ for ($i = 0; $i -lt $ArgsList.Count; $i++) {{
         }}
         "--installer-version" {{
             $InstallerVersion = $ArgsList[++$i]
+        }}
+        "--install-dir" {{
+            $ExplicitInstallDir = $ArgsList[++$i]
+            [void]$ForwardArgs.Add("--install-dir")
+            [void]$ForwardArgs.Add($ExplicitInstallDir)
+        }}
+        "--no-modify-path" {{
+            $NoModifyPath = $true
+            [void]$ForwardArgs.Add("--no-modify-path")
         }}
         default {{
             [void]$ForwardArgs.Add($ArgsList[$i])
@@ -627,6 +648,38 @@ function Invoke-FileRequest([string]$Uri, [string]$OutFile) {{
             Start-Sleep -Seconds 1
         }}
     }}
+}}
+
+function Normalize-PathEntry([string]$Value) {{
+    if (-not $Value) {{ return "" }}
+    return $Value.Trim().TrimEnd("\").ToLowerInvariant()
+}}
+
+function Update-SessionPath {{
+    param(
+        [Parameter(Mandatory = $true)][string]$BinDir,
+        [Parameter(Mandatory = $true)][bool]$Present
+    )
+
+    $entries = @()
+    if ($env:Path) {{
+        $entries = $env:Path -split ';' | Where-Object {{ $_ -and $_.Trim() }}
+    }}
+
+    $binKey = Normalize-PathEntry $BinDir
+    $filtered = @(
+        $entries | Where-Object {{ (Normalize-PathEntry $_) -ne $binKey }}
+    )
+    if ($Present) {{
+        $filtered = @($BinDir) + $filtered
+    }}
+    $env:Path = ($filtered -join ';')
+}}
+
+$SessionBinDir = if ($ExplicitInstallDir) {{
+    Join-Path $ExplicitInstallDir "bin"
+}} else {{
+    Join-Path $HOME ".agents\bin"
 }}
 
 $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLower()
@@ -725,7 +778,10 @@ try {{
     $CommandArgs += $ForwardArgs
 
     & $InstallerPath @CommandArgs
-    exit $LASTEXITCODE
+    $ExitCode = $LASTEXITCODE
+    if ($ExitCode -eq 0 -and -not $NoModifyPath) {{
+{session_path_line}    }}
+    exit $ExitCode
 }} finally {{
     if (Test-Path $TempDir) {{
         Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
@@ -737,6 +793,7 @@ try {{
         installer_bin = installer_bin,
         command = command.as_cli(),
         provider_line = provider_line,
+        session_path_line = session_path_line,
     )
 }
 
@@ -824,6 +881,24 @@ mod tests {
     }
 
     #[test]
+    fn render_sh_script_initializes_curl_retry_args() {
+        let script = render_bootstrap_script(
+            ScriptCommand::Install,
+            Some("tool-a"),
+            ScriptFlavor::Sh,
+            Some("https://mirror.example.com"),
+            "installer",
+            "acm-installer",
+        )
+        .expect("render shell bootstrap script");
+
+        assert!(
+            script.contains("CURL_RETRY_ARGS=(--retry 3 --retry-delay 1 --connect-timeout 10)")
+        );
+        assert!(script.contains("curl -fsSL \"${CURL_RETRY_ARGS[@]}\" \"$@\""));
+    }
+
+    #[test]
     fn render_ps1_script_prefers_installer_named_asset() {
         let script = render_bootstrap_script(
             ScriptCommand::Install,
@@ -838,6 +913,25 @@ mod tests {
         assert!(script.contains("$_.Name -eq $InstallerBin"));
         assert!(script.contains("$_.Name.StartsWith(\"$InstallerBin-\")"));
         assert!(script.contains("$_.Name.Contains($Platform)"));
+    }
+
+    #[test]
+    fn render_ps1_script_updates_session_path_for_install() {
+        let script = render_bootstrap_script(
+            ScriptCommand::Install,
+            Some("tool-a"),
+            ScriptFlavor::Ps1,
+            Some("https://mirror.example.com"),
+            "installer",
+            "acm-installer",
+        )
+        .expect("render powershell bootstrap script");
+
+        assert!(script.contains("function Update-SessionPath"));
+        assert!(script.contains("--install-dir"));
+        assert!(script.contains("--no-modify-path"));
+        assert!(script.contains("Join-Path $HOME \".agents\\bin\""));
+        assert!(script.contains("Update-SessionPath -BinDir $SessionBinDir -Present $true"));
     }
 
     #[test]
