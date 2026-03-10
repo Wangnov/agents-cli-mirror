@@ -88,6 +88,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - name: linux-x64-gnu-jammy
+            platform: linux/amd64
+            image: ubuntu:22.04
+            install_deps: apt-get update && apt-get install -y bash curl ca-certificates python3 xz-utils
           - name: linux-x64-gnu
             platform: linux/amd64
             image: ubuntu:24.04

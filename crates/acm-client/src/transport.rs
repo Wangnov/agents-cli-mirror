@@ -68,7 +68,7 @@ pub(super) fn select_asset_for_platform(
         ));
     }
 
-    let hints = platform_hints(platform);
+    let hints = platform_hints(platform, provider);
     let mut files = platform_entry
         .files
         .iter()
@@ -86,6 +86,10 @@ pub(super) fn select_asset_for_platform(
         .min_by(|(name_a, _), (name_b, _)| {
             primary_asset_priority(name_a, provider, &hints)
                 .cmp(&primary_asset_priority(name_b, provider, &hints))
+                .then_with(|| {
+                    platform_hint_priority(name_a, &hints)
+                        .cmp(&platform_hint_priority(name_b, &hints))
+                })
                 .then_with(|| name_a.cmp(name_b))
         })
     {
@@ -98,20 +102,39 @@ pub(super) fn select_asset_for_platform(
         .ok_or_else(|| anyhow!("empty files map"))
 }
 
-fn platform_hints(platform: &str) -> Vec<&'static str> {
-    match platform {
-        "x86_64-apple-darwin" => vec!["x86_64-apple-darwin", "darwin-x64", "macos-x64"],
-        "aarch64-apple-darwin" => vec!["aarch64-apple-darwin", "darwin-arm64", "macos-arm64"],
-        "x86_64-unknown-linux-gnu" => vec!["x86_64-unknown-linux-gnu", "linux-x64"],
-        "aarch64-unknown-linux-gnu" => vec!["aarch64-unknown-linux-gnu", "linux-arm64"],
-        "x86_64-unknown-linux-musl" => vec!["x86_64-unknown-linux-musl", "linux-x64-musl"],
-        "aarch64-unknown-linux-musl" => vec!["aarch64-unknown-linux-musl", "linux-arm64-musl"],
-        "x86_64-pc-windows-msvc" => vec!["x86_64-pc-windows-msvc", "win32-x64", "windows-x64"],
-        "aarch64-pc-windows-msvc" => {
+fn platform_hints(platform: &str, provider: &str) -> Vec<&'static str> {
+    match (provider, platform) {
+        ("codex", "x86_64-unknown-linux-gnu") => vec![
+            "x86_64-unknown-linux-musl",
+            "linux-x64-musl",
+            "x86_64-unknown-linux-gnu",
+            "linux-x64",
+        ],
+        ("codex", "aarch64-unknown-linux-gnu") => vec![
+            "aarch64-unknown-linux-musl",
+            "linux-arm64-musl",
+            "aarch64-unknown-linux-gnu",
+            "linux-arm64",
+        ],
+        (_, "x86_64-apple-darwin") => vec!["x86_64-apple-darwin", "darwin-x64", "macos-x64"],
+        (_, "aarch64-apple-darwin") => vec!["aarch64-apple-darwin", "darwin-arm64", "macos-arm64"],
+        (_, "x86_64-unknown-linux-gnu") => vec!["x86_64-unknown-linux-gnu", "linux-x64"],
+        (_, "aarch64-unknown-linux-gnu") => vec!["aarch64-unknown-linux-gnu", "linux-arm64"],
+        (_, "x86_64-unknown-linux-musl") => vec!["x86_64-unknown-linux-musl", "linux-x64-musl"],
+        (_, "aarch64-unknown-linux-musl") => vec!["aarch64-unknown-linux-musl", "linux-arm64-musl"],
+        (_, "x86_64-pc-windows-msvc") => vec!["x86_64-pc-windows-msvc", "win32-x64", "windows-x64"],
+        (_, "aarch64-pc-windows-msvc") => {
             vec!["aarch64-pc-windows-msvc", "win32-arm64", "windows-arm64"]
         }
         _ => vec![],
     }
+}
+
+fn platform_hint_priority(name: &str, hints: &[&str]) -> usize {
+    hints
+        .iter()
+        .position(|hint| matches_platform_hint(name, hint))
+        .unwrap_or(hints.len())
 }
 
 fn matches_platform_hint(name: &str, hint: &str) -> bool {
@@ -141,6 +164,9 @@ fn select_installable_asset(
         .min_by(|a, b| {
             primary_asset_priority(a.1, provider, hints)
                 .cmp(&primary_asset_priority(b.1, provider, hints))
+                .then_with(|| {
+                    platform_hint_priority(a.1, hints).cmp(&platform_hint_priority(b.1, hints))
+                })
                 .then_with(|| a.0.cmp(&b.0))
                 .then_with(|| a.1.cmp(b.1))
         });
@@ -156,6 +182,9 @@ fn select_installable_asset(
         .min_by(|a, b| {
             primary_asset_priority(a.1, provider, hints)
                 .cmp(&primary_asset_priority(b.1, provider, hints))
+                .then_with(|| {
+                    platform_hint_priority(a.1, hints).cmp(&platform_hint_priority(b.1, hints))
+                })
                 .then_with(|| a.0.cmp(&b.0))
                 .then_with(|| a.1.cmp(b.1))
         })
@@ -459,6 +488,31 @@ mod tests {
 
         assert_eq!(name, "codex-x86_64-unknown-linux-gnu.tar.gz");
         assert_eq!(meta.sha256, "sha-codex");
+    }
+
+    #[test]
+    fn select_asset_for_platform_prefers_codex_musl_on_linux_gnu_for_compatibility() {
+        let mut checksums = HashMap::new();
+        checksums.insert(
+            "v1.0.0".to_string(),
+            HashMap::from([(
+                "universal".to_string(),
+                entry(
+                    "codex-x86_64-unknown-linux-gnu.tar.gz",
+                    &[
+                        ("codex-x86_64-unknown-linux-gnu.tar.gz", "sha-gnu"),
+                        ("codex-x86_64-unknown-linux-musl.tar.gz", "sha-musl"),
+                    ],
+                ),
+            )]),
+        );
+
+        let (name, meta) =
+            select_asset_for_platform(&checksums, "v1.0.0", "x86_64-unknown-linux-gnu", "codex")
+                .expect("select asset");
+
+        assert_eq!(name, "codex-x86_64-unknown-linux-musl.tar.gz");
+        assert_eq!(meta.sha256, "sha-musl");
     }
 
     #[test]

@@ -67,11 +67,24 @@ impl GenericProvider {
         &self.config.name
     }
 
+    fn release_has_required_assets(&self, release: &Release) -> bool {
+        if self.config.files.is_empty() {
+            return !release.assets.is_empty();
+        }
+
+        self.config
+            .files
+            .iter()
+            .all(|required| release.assets.iter().any(|asset| asset.name == *required))
+    }
+
     fn select_release<'a>(&self, releases: &'a [Release], tag: &str) -> Option<&'a Release> {
         let allow_prerelease = tag == "latest" && self.config.include_prerelease;
-        releases
-            .iter()
-            .find(|release| !release.draft && (allow_prerelease || !release.prerelease))
+        releases.iter().find(|release| {
+            !release.draft
+                && (allow_prerelease || !release.prerelease)
+                && self.release_has_required_assets(release)
+        })
     }
 
     fn asset_digest_sha256(asset: &Asset) -> Option<&str> {
@@ -660,6 +673,7 @@ mod tests {
         CacheConfig, DynamicProviderConfig, HttpConfig, ProviderSource, ProviderUpdatePolicy,
         StorageConfig, StorageMode,
     };
+    use crate::providers::github::{Asset, Release};
     use tempfile::TempDir;
 
     fn static_provider(name: &str, version: &str, file: &str) -> DynamicProviderConfig {
@@ -675,6 +689,23 @@ mod tests {
             repo: None,
             upstream_url: None,
             static_version: Some(version.to_string()),
+            ui: Default::default(),
+        }
+    }
+
+    fn github_provider(name: &str) -> DynamicProviderConfig {
+        DynamicProviderConfig {
+            name: name.to_string(),
+            enabled: true,
+            source: ProviderSource::GithubRelease,
+            tags: vec!["latest".to_string()],
+            update_policy: ProviderUpdatePolicy::Tracking,
+            platforms: Vec::new(),
+            include_prerelease: false,
+            files: Vec::new(),
+            repo: Some("owner/repo".to_string()),
+            upstream_url: None,
+            static_version: None,
             ui: Default::default(),
         }
     }
@@ -720,5 +751,51 @@ mod tests {
             .await
             .expect_err("s3 mode without client should fail");
         assert!(err.to_string().contains("S3 client not initialized"));
+    }
+
+    #[test]
+    fn select_release_skips_empty_asset_release_for_latest() {
+        let temp_dir = TempDir::new().expect("create temp dir");
+        let cache = Arc::new(
+            CacheManager::new(&CacheConfig {
+                dir: temp_dir.path().to_path_buf(),
+                max_versions: 10,
+            })
+            .expect("create cache"),
+        );
+
+        let provider = GenericProvider::new(
+            github_provider("gemini"),
+            cache,
+            StorageConfig::default(),
+            StorageClients::default(),
+            HttpConfig::default(),
+        )
+        .expect("create provider");
+
+        let releases = vec![
+            Release {
+                tag_name: "v0.33.0-preview.7".to_string(),
+                prerelease: false,
+                draft: false,
+                assets: Vec::new(),
+            },
+            Release {
+                tag_name: "v0.32.1".to_string(),
+                prerelease: false,
+                draft: false,
+                assets: vec![Asset {
+                    name: "gemini.js".to_string(),
+                    browser_download_url: "https://example.com/gemini.js".to_string(),
+                    digest: None,
+                }],
+            },
+        ];
+
+        let selected = provider
+            .select_release(&releases, "latest")
+            .expect("select release");
+
+        assert_eq!(selected.tag_name, "v0.32.1");
     }
 }
