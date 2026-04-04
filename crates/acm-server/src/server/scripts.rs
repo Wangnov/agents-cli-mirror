@@ -521,7 +521,7 @@ fi
 TMP_BIN="$(extract_installer "$CACHE_ARCHIVE" "$TMP_DIR")"
 chmod +x "$TMP_BIN" 2>/dev/null || true
 
-COMMAND_ARGS=("--mirror-url" "$MIRROR_URL" "{command}")
+COMMAND_ARGS=("--config" "$TMP_DIR/config.toml" "--mirror-url" "$MIRROR_URL" "{command}")
 {provider_line}
 if [[ ${{#FORWARD_ARGS[@]}} -gt 0 ]]; then
     COMMAND_ARGS+=("${{FORWARD_ARGS[@]}}")
@@ -773,7 +773,7 @@ try {{
         throw "Unsupported installer archive format on PowerShell path: $CacheArchivePath"
     }}
 
-    $CommandArgs = @("--mirror-url", $MirrorUrl, "{command}")
+    $CommandArgs = @("--config", (Join-Path $TempDir "config.toml"), "--mirror-url", $MirrorUrl, "{command}")
     {provider_line}
     $CommandArgs += $ForwardArgs
 
@@ -935,6 +935,23 @@ mod tests {
     }
 
     #[test]
+    fn render_ps1_script_passes_temp_config_path_to_installer() {
+        let script = render_bootstrap_script(
+            ScriptCommand::Install,
+            Some("tool-a"),
+            ScriptFlavor::Ps1,
+            Some("https://mirror.example.com"),
+            "installer",
+            "acm-installer",
+        )
+        .expect("render powershell bootstrap script");
+
+        assert!(script.contains(
+            "$CommandArgs = @(\"--config\", (Join-Path $TempDir \"config.toml\"), \"--mirror-url\", $MirrorUrl, \"install\")"
+        ));
+    }
+
+    #[test]
     fn render_sh_script_avoids_bash4_case_conversion() {
         let script = render_bootstrap_script(
             ScriptCommand::Install,
@@ -966,6 +983,21 @@ mod tests {
 
         assert!(!script.contains("COMMAND_ARGS+=(\\\"\\${FORWARD_ARGS[@]}\\\")"));
         assert!(script.contains("if [[ ${#FORWARD_ARGS[@]} -gt 0 ]]; then"));
+    }
+
+    #[test]
+    fn render_sh_script_passes_temp_config_path_to_installer() {
+        let script = render_bootstrap_script(
+            ScriptCommand::Install,
+            Some("tool-a"),
+            ScriptFlavor::Sh,
+            Some("https://mirror.example.com"),
+            "installer",
+            "acm-installer",
+        )
+        .expect("render shell bootstrap script");
+
+        assert!(script.contains("COMMAND_ARGS=(\"--config\" \"$TMP_DIR/config.toml\""));
     }
 
     #[test]
