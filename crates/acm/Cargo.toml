@@ -1,6 +1,6 @@
 [package]
 name = "acm"
-version = "0.1.15"
+version = "0.1.16"
 edition = "2024"
 rust-version = "1.85"
 description = "ACM lite client binary wrapper"
@@ -16,4 +16,4 @@ name = "acm"
 path = "src/main.rs"
 
 [dependencies]
-acm-client = { path = "../acm-client", version = "0.1.15" }
+acm-client = { path = "../acm-client", version = "0.1.16" }

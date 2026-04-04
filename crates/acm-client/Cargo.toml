@@ -1,6 +1,6 @@
 [package]
 name = "acm-client"
-version = "0.1.15"
+version = "0.1.16"
 edition = "2024"
 rust-version = "1.85"
 description = "ACM local client"
@@ -23,8 +23,8 @@ name = "acm-client"
 path = "src/main.rs"
 
 [dependencies]
-acm-core = { path = "../acm-core", version = "0.1.15" }
-acm-server = { path = "../acm-server", version = "0.1.15", default-features = false }
+acm-core = { path = "../acm-core", version = "0.1.16" }
+acm-server = { path = "../acm-server", version = "0.1.16", default-features = false }
 anyhow = "1"
 thiserror = "2"
 clap = { version = "4.5", features = ["derive"] }

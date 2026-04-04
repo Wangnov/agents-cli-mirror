@@ -1,6 +1,6 @@
 [package]
 name = "acm-full"
-version = "0.1.15"
+version = "0.1.16"
 edition = "2024"
 rust-version = "1.85"
 description = "ACM full client binary wrapper (includes s3 support)"
@@ -16,4 +16,4 @@ name = "acm-full"
 path = "src/main.rs"
 
 [dependencies]
-acm-client = { path = "../acm-client", version = "0.1.15", features = ["s3"] }
+acm-client = { path = "../acm-client", version = "0.1.16", features = ["s3"] }
