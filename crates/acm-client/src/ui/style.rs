@@ -175,7 +175,7 @@ impl Theme {
         match value.trim().to_ascii_lowercase().as_str() {
             "acm" => Some(Theme::Acm),
             "codex" => Some(Theme::Codex),
-            "claude" | "claude_code" | "claude-code" => Some(Theme::Claude),
+            "claude" => Some(Theme::Claude),
             "gemini" => Some(Theme::Gemini),
             _ => None,
         }
@@ -188,5 +188,17 @@ impl Theme {
             Theme::Claude => "claude",
             Theme::Gemini => "gemini",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Theme;
+
+    #[test]
+    fn from_preset_only_accepts_canonical_claude_name() {
+        assert!(matches!(Theme::from_preset("claude"), Some(Theme::Claude)));
+        assert!(Theme::from_preset("claude-code").is_none());
+        assert!(Theme::from_preset("claude_code").is_none());
     }
 }

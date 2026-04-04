@@ -93,13 +93,12 @@ curl -fsSL http://127.0.0.1:1357/api/codex/checksums
 # Unix shell
 curl -fsSL https://mirror.example.com/install/codex | bash
 curl -fsSL https://mirror.example.com/codex/install.sh | bash
-curl -fsSL https://mirror.example.com/claude-code/install.sh | bash
 curl -fsSL https://mirror.example.com/claude/install.sh | bash
 curl -fsSL https://mirror.example.com/gemini/install.sh | bash
 
 # PowerShell
 irm https://mirror.example.com/install/codex | iex
-irm https://mirror.example.com/install/claude-code | iex
+irm https://mirror.example.com/install/claude | iex
 irm https://mirror.example.com/install/gemini | iex
 ```
 
@@ -118,12 +117,12 @@ irm https://mirror.example.com/install/gemini | iex
 
 当前内置的公开 provider 名称是：
 
-- `claude-code`
+- `claude`
 - `codex`
 - `gemini`
 - `installer`
 
-注意：Claude 的规范 provider 名仍然是 `claude-code`；同时为了兼容用户习惯，公开安装入口也会额外发布 `/claude/*` 别名。
+注意：Claude 的规范 provider 名是 `claude`。
 
 #### A) Cloudflare / R2 侧配置
 
@@ -282,12 +281,12 @@ acm auto-update run
 
 ```toml
 [[providers]]
-name = "claude-code"
+name = "claude"
 source = "gcs_release"
 upstream_url = "https://storage.googleapis.com/your-bucket/releases"
 tags = ["latest"]
 update_policy = "tracking"
-files = ["linux-x64/claude", "darwin-arm64/claude"]
+files = ["linux-x64/claude", "darwin-arm64/claude", "win32-arm64/claude.exe"]
 
 [providers.ui]
 preset = "claude"

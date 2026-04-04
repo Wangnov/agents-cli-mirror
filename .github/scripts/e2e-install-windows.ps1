@@ -90,9 +90,9 @@ function Run-Cli {
 }
 
 if ($env:SKIP_CLAUDE -eq "1") {
-    Write-Host "Skipping claude-code: SKIP_CLAUDE=1"
+    Write-Host "Skipping claude: SKIP_CLAUDE=1"
 } else {
-    Run-Cli -Name "claude-code" -Bin "$BinDir\claude-code.exe"
+    Run-Cli -Name "claude" -Bin "$BinDir\claude.exe"
 }
 Run-Cli -Name "codex" -Bin "$BinDir\codex.exe"
 if ($env:SKIP_GEMINI -eq "1") {

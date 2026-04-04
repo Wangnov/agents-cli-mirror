@@ -499,6 +499,10 @@ fn is_valid_provider_name(name: &str) -> bool {
         })
 }
 
+fn is_legacy_claude_provider_name(name: &str) -> bool {
+    matches!(name, "claude-code" | "claude_code")
+}
+
 fn validate_repo_format(repo: &str) -> Result<()> {
     let trimmed = repo.trim();
     if trimmed.is_empty() {
@@ -544,6 +548,12 @@ impl DynamicProviderConfig {
         if !is_valid_provider_name(&self.name) {
             anyhow::bail!(
                 "invalid provider name '{}' (allowed: lowercase letters, digits, '-', '_', '.')",
+                self.name
+            );
+        }
+        if is_legacy_claude_provider_name(&self.name) {
+            anyhow::bail!(
+                "legacy provider name '{}' is no longer supported; use 'claude'",
                 self.name
             );
         }
@@ -640,6 +650,12 @@ impl Config {
         if !is_valid_provider_name(&self.server.installer_provider) {
             anyhow::bail!(
                 "invalid server.installer_provider '{}' (allowed: lowercase letters, digits, '-', '_', '.')",
+                self.server.installer_provider
+            );
+        }
+        if is_legacy_claude_provider_name(&self.server.installer_provider) {
+            anyhow::bail!(
+                "legacy server.installer_provider '{}' is no longer supported; use 'claude'",
                 self.server.installer_provider
             );
         }
@@ -952,6 +968,43 @@ enabled = true
     }
 
     #[test]
+    fn test_load_config_rejects_legacy_claude_provider_name() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[[providers]]
+name = "claude-code"
+source = "static"
+static_version = "2.1.92"
+files = ["darwin-arm64/claude"]
+"#
+        )
+        .unwrap();
+
+        let err = Config::load(file.path()).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("legacy provider name"));
+    }
+
+    #[test]
+    fn test_load_config_rejects_legacy_installer_provider_name() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[server]
+installer_provider = "claude-code"
+"#
+        )
+        .unwrap();
+
+        let err = Config::load(file.path()).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("legacy server.installer_provider"));
+    }
+
+    #[test]
     fn test_load_config_rejects_github_release_without_repo() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(
@@ -1056,7 +1109,7 @@ tags = ["latest"]
         let cloud_config = fs::read_to_string(&config_path).expect("read config.cloud.toml");
         toml::from_str::<toml::Value>(&cloud_config).expect("parse config.cloud.toml");
 
-        assert!(cloud_config.contains("name = \"claude-code\""));
+        assert!(cloud_config.contains("name = \"claude\""));
         assert!(cloud_config.contains("name = \"codex\""));
         assert!(cloud_config.contains("name = \"gemini\""));
         assert!(cloud_config.contains("name = \"installer\""));
@@ -1068,16 +1121,18 @@ tags = ["latest"]
         let workflow_path = repo_root.join(".github/workflows/install-tests.yml");
         let workflow = fs::read_to_string(&workflow_path).expect("read install-tests workflow");
 
-        assert!(workflow.contains("curl -fsSL \"$MIRROR_URL/claude-code/install.sh\" >/dev/null"));
         assert!(workflow.contains("curl -fsSL \"$MIRROR_URL/claude/install.sh\" >/dev/null"));
         assert!(workflow.contains("curl -fsSL \"$MIRROR_URL/codex/install.sh\" >/dev/null"));
         assert!(workflow.contains("curl -fsSL \"$MIRROR_URL/gemini/install.sh\" >/dev/null"));
-        assert!(workflow.contains("Invoke-WebRequest -Uri \"$env:MIRROR_URL/claude-code/install.sh\" -UseBasicParsing | Out-Null"));
         assert!(workflow.contains("Invoke-WebRequest -Uri \"$env:MIRROR_URL/claude/install.sh\" -UseBasicParsing | Out-Null"));
         assert!(workflow.contains("Invoke-WebRequest -Uri \"$env:MIRROR_URL/codex/install.sh\" -UseBasicParsing | Out-Null"));
         assert!(workflow.contains("Invoke-WebRequest -Uri \"$env:MIRROR_URL/gemini/install.sh\" -UseBasicParsing | Out-Null"));
         assert!(!workflow.contains("SKIP_CLAUDE: \"1\""));
         assert!(!workflow.contains("SKIP_GEMINI: \"1\""));
+        assert!(workflow.contains("ACM_E2E_PATH_MODE=shim bash \"$script_path\""));
+        assert!(workflow.contains("ACM_E2E_PATH_MODE=reload bash \"$script_path\""));
+        assert!(workflow.contains("-e ACM_E2E_PATH_MODE=\"shim\""));
+        assert!(workflow.contains("-e ACM_E2E_PATH_MODE=\"reload\""));
     }
 
     #[test]
@@ -1090,15 +1145,20 @@ tags = ["latest"]
                 .expect("read windows install e2e script");
 
         assert!(unix_script.contains("elif is_musl; then"));
-        assert!(unix_script.contains("Skipping claude-code on musl"));
-        assert!(unix_script.contains("run_cli \"claude-code\" \"claude-code\""));
+        assert!(unix_script.contains("Skipping claude on musl"));
+        assert!(unix_script.contains("PATH_MODE=\"${ACM_E2E_PATH_MODE:-shim}\""));
+        assert!(unix_script.contains("run_cli \"claude\" \"claude\""));
         assert!(unix_script.contains("run_cli \"gemini\" \"gemini\""));
+        assert!(unix_script.contains("local install_url=\"$MIRROR_URL/$public_name/install.sh\""));
+        assert!(
+            unix_script.contains("local uninstall_url=\"$MIRROR_URL/$public_name/uninstall.sh\"")
+        );
+        assert!(unix_script.contains("$HOME/.zshrc"));
+        assert!(unix_script.contains("$HOME/.zprofile"));
+        assert!(!unix_script.contains("export PATH=\"$HOME/.local/bin:$PATH\""));
         assert!(!unix_script.contains("run_cli \"gemini\" \"gemini\" \"--yes\""));
 
-        assert!(
-            windows_script
-                .contains("Run-Cli -Name \"claude-code\" -Bin \"$BinDir\\claude-code.exe\"")
-        );
+        assert!(windows_script.contains("Run-Cli -Name \"claude\" -Bin \"$BinDir\\claude.exe\""));
         assert!(windows_script.contains("Run-Cli -Name \"gemini\" -Bin \"$BinDir\\gemini.cmd\""));
         assert!(!windows_script.contains(
             "Run-Cli -Name \"gemini\" -Bin \"$BinDir\\gemini.cmd\" -UninstallArgs @(\"-Yes\")"

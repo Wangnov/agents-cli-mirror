@@ -6,8 +6,60 @@ if [[ -z "${MIRROR_URL:-}" ]]; then
   exit 1
 fi
 export MIRROR_URL
-export PATH="$HOME/.local/bin:$PATH"
-mkdir -p "$HOME/.local/bin"
+PATH_MODE="${ACM_E2E_PATH_MODE:-shim}"
+BASE_PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+export SHELL="${SHELL:-/bin/bash}"
+
+setup_path_mode() {
+  export PATH="$BASE_PATH"
+
+  case "$PATH_MODE" in
+    shim)
+      mkdir -p "$HOME/.local/bin"
+      export PATH="${HOME}/.local/bin:$PATH"
+      ;;
+    reload)
+      ;;
+    *)
+      echo "Unknown ACM_E2E_PATH_MODE: $PATH_MODE" >&2
+      exit 1
+      ;;
+  esac
+}
+
+reload_shell_path() {
+  local shell_name=""
+  local -a rc_candidates=()
+  shell_name="$(basename "${SHELL:-}")"
+
+  case "$shell_name" in
+    zsh)
+      rc_candidates+=("$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.profile")
+      ;;
+    bash)
+      rc_candidates+=("$HOME/.bashrc" "$HOME/.profile")
+      ;;
+    *)
+      rc_candidates+=("$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.zprofile")
+      ;;
+  esac
+
+  for rc_file in "${rc_candidates[@]}"; do
+    if [[ ! -f "$rc_file" ]]; then
+      continue
+    fi
+
+    set +u
+    # shellcheck disable=SC1090
+    source "$rc_file"
+    set -u
+    hash -r
+    return
+  done
+
+  echo "No shell rc file created for reload mode" >&2
+  exit 1
+}
 
 is_musl() {
   if command -v ldd >/dev/null 2>&1; then
@@ -75,19 +127,27 @@ PY
 }
 
 run_cli() {
-  local name="$1"
+  local public_name="$1"
   local cmd="$2"
   local install_root="$HOME/.acm"
   local bin_path="$HOME/.agents/bin/$cmd"
   local shim_path="$HOME/.local/bin/$cmd"
+  local install_url="$MIRROR_URL/$public_name/install.sh"
+  local uninstall_url="$MIRROR_URL/$public_name/uninstall.sh"
   shift 2
   local uninstall_args=("$@")
 
-  echo "==> Installing $name"
-  curl -fsSL "$MIRROR_URL/install/$name" >/dev/null
-  curl -fsSL "$MIRROR_URL/install/$name" | MIRROR_URL="$MIRROR_URL" bash -s --
+  setup_path_mode
+
+  echo "==> Installing $public_name ($cmd) [mode=$PATH_MODE]"
+  curl -fsSL "$install_url" >/dev/null
+  curl -fsSL "$install_url" | MIRROR_URL="$MIRROR_URL" bash -s --
 
   echo "==> Resolve check: $cmd"
+  resolved_bin=""
+  if [[ "$PATH_MODE" == "reload" ]]; then
+    reload_shell_path
+  fi
   resolved_bin="$(command -v "$cmd" || true)"
   if [[ -z "$resolved_bin" ]]; then
     echo "PATH check failed: $cmd not found" >&2
@@ -111,12 +171,12 @@ run_cli() {
 
   test -f "$install_root/state.toml"
 
-  echo "==> Uninstalling $name"
-  curl -fsSL "$MIRROR_URL/uninstall/$name" >/dev/null
+  echo "==> Uninstalling $public_name ($cmd)"
+  curl -fsSL "$uninstall_url" >/dev/null
   if [[ ${#uninstall_args[@]} -gt 0 ]]; then
-    curl -fsSL "$MIRROR_URL/uninstall/$name" | MIRROR_URL="$MIRROR_URL" bash -s -- "${uninstall_args[@]}"
+    curl -fsSL "$uninstall_url" | MIRROR_URL="$MIRROR_URL" bash -s -- "${uninstall_args[@]}"
   else
-    curl -fsSL "$MIRROR_URL/uninstall/$name" | MIRROR_URL="$MIRROR_URL" bash -s --
+    curl -fsSL "$uninstall_url" | MIRROR_URL="$MIRROR_URL" bash -s --
   fi
 
   if [[ -e "$bin_path" || -L "$bin_path" || -e "$shim_path" || -L "$shim_path" || -e "$install_root/bin/$cmd" || -L "$install_root/bin/$cmd" ]]; then
@@ -126,11 +186,11 @@ run_cli() {
 }
 
 if [[ "${SKIP_CLAUDE:-}" == "1" ]]; then
-  echo "Skipping claude-code: SKIP_CLAUDE=1"
+  echo "Skipping claude: SKIP_CLAUDE=1"
 elif is_musl; then
-  echo "Skipping claude-code on musl: upstream binary is currently incompatible"
+  echo "Skipping claude on musl: upstream binary is currently incompatible"
 else
-  run_cli "claude-code" "claude-code"
+  run_cli "claude" "claude"
 fi
 if [[ "${SKIP_CODEX:-}" == "1" ]]; then
   echo "Skipping codex: SKIP_CODEX=1"

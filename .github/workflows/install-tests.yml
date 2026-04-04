@@ -21,6 +21,8 @@ jobs:
             name: macos-arm64
           - os: windows-latest
             name: windows-x64
+          - os: windows-11-arm
+            name: windows-arm64
     env:
       MIRROR_URL: ${{ github.event.inputs.mirror_url || secrets.MIRROR_PUBLIC_URL }}
     steps:
@@ -37,10 +39,9 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsSL "$MIRROR_URL/api/installer/info" >/dev/null
-          curl -fsSL "$MIRROR_URL/api/claude-code/info" >/dev/null
+          curl -fsSL "$MIRROR_URL/api/claude/info" >/dev/null
           curl -fsSL "$MIRROR_URL/api/codex/info" >/dev/null
           curl -fsSL "$MIRROR_URL/api/gemini/info" >/dev/null
-          curl -fsSL "$MIRROR_URL/claude-code/install.sh" >/dev/null
           curl -fsSL "$MIRROR_URL/claude/install.sh" >/dev/null
           curl -fsSL "$MIRROR_URL/codex/install.sh" >/dev/null
           curl -fsSL "$MIRROR_URL/gemini/install.sh" >/dev/null
@@ -50,10 +51,9 @@ jobs:
         shell: pwsh
         run: |
           Invoke-RestMethod "$env:MIRROR_URL/api/installer/info" | Out-Null
-          Invoke-RestMethod "$env:MIRROR_URL/api/claude-code/info" | Out-Null
+          Invoke-RestMethod "$env:MIRROR_URL/api/claude/info" | Out-Null
           Invoke-RestMethod "$env:MIRROR_URL/api/codex/info" | Out-Null
           Invoke-RestMethod "$env:MIRROR_URL/api/gemini/info" | Out-Null
-          Invoke-WebRequest -Uri "$env:MIRROR_URL/claude-code/install.sh" -UseBasicParsing | Out-Null
           Invoke-WebRequest -Uri "$env:MIRROR_URL/claude/install.sh" -UseBasicParsing | Out-Null
           Invoke-WebRequest -Uri "$env:MIRROR_URL/codex/install.sh" -UseBasicParsing | Out-Null
           Invoke-WebRequest -Uri "$env:MIRROR_URL/gemini/install.sh" -UseBasicParsing | Out-Null
@@ -63,10 +63,19 @@ jobs:
         shell: bash
         run: |
           script_path="$GITHUB_WORKSPACE/.github/scripts/e2e-install-unix.sh"
-          export HOME="$RUNNER_TEMP/home"
+          base_path="$PATH"
+          export SHELL="/bin/bash"
+          export HOME="$RUNNER_TEMP/home-shim"
+          rm -rf "$HOME"
           mkdir -p "$HOME"
           cd "$HOME"
-          bash "$script_path"
+          PATH="$base_path" ACM_E2E_PATH_MODE=shim bash "$script_path"
+
+          export HOME="$RUNNER_TEMP/home-reload"
+          rm -rf "$HOME"
+          mkdir -p "$HOME"
+          cd "$HOME"
+          PATH="$base_path" ACM_E2E_PATH_MODE=reload bash "$script_path"
 
       - name: Run install tests (Windows)
         if: startsWith(matrix.os, 'windows')
@@ -126,10 +135,10 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsSL "$MIRROR_URL/api/installer/info" >/dev/null
-          curl -fsSL "$MIRROR_URL/api/claude-code/info" >/dev/null
+          curl -fsSL "$MIRROR_URL/api/claude/info" >/dev/null
           curl -fsSL "$MIRROR_URL/api/codex/info" >/dev/null
           curl -fsSL "$MIRROR_URL/api/gemini/info" >/dev/null
-          curl -fsSL "$MIRROR_URL/claude-code/install.sh" >/dev/null
+          curl -fsSL "$MIRROR_URL/claude/install.sh" >/dev/null
           curl -fsSL "$MIRROR_URL/codex/install.sh" >/dev/null
           curl -fsSL "$MIRROR_URL/gemini/install.sh" >/dev/null
 
@@ -138,8 +147,21 @@ jobs:
           docker run --rm \
             --platform ${{ matrix.platform }} \
             -e MIRROR_URL="$MIRROR_URL" \
-            -e HOME="/tmp/home" \
+            -e ACM_E2E_PATH_MODE="shim" \
+            -e HOME="/tmp/home-shim" \
+            -e SHELL="/bin/bash" \
             -v "$PWD:/work" \
             -w /work \
             ${{ matrix.image }} \
-            /bin/sh -c "${{ matrix.install_deps }} && mkdir -p /tmp/home && cd /tmp/home && bash /work/.github/scripts/e2e-install-unix.sh"
+            /bin/sh -c "${{ matrix.install_deps }} && mkdir -p \$HOME && cd \$HOME && bash /work/.github/scripts/e2e-install-unix.sh"
+
+          docker run --rm \
+            --platform ${{ matrix.platform }} \
+            -e MIRROR_URL="$MIRROR_URL" \
+            -e ACM_E2E_PATH_MODE="reload" \
+            -e HOME="/tmp/home-reload" \
+            -e SHELL="/bin/bash" \
+            -v "$PWD:/work" \
+            -w /work \
+            ${{ matrix.image }} \
+            /bin/sh -c "${{ matrix.install_deps }} && mkdir -p \$HOME && cd \$HOME && bash /work/.github/scripts/e2e-install-unix.sh"

@@ -5,7 +5,6 @@ use tracing::{info, warn};
 
 use crate::cache::{CacheManager, ProviderMetadata};
 use crate::config::{Config, StorageMode};
-use crate::provider_aliases::public_provider_names;
 use crate::providers::GenericProvider;
 use crate::s3;
 use crate::server::scripts::{ScriptCommand, ScriptFlavor};
@@ -231,119 +230,117 @@ pub async fn publish(
             mirror_url,
         };
 
-        for public_name in public_provider_names(provider_name) {
-            let mut tags: BTreeMap<String, String> =
-                provider_meta.tags.clone().into_iter().collect();
-            stable_fallback_tag(&mut tags);
-            for (tag, version) in &tags {
-                let object_key = format!("{}/{}", public_name, tag);
-                put_text(
-                    &storage_clients,
-                    &config,
-                    &object_key,
-                    "text/plain",
-                    format!("{}\n", version),
-                )
-                .await?;
-            }
-
-            put_json_pretty(
+        let public_name = provider_name;
+        let mut tags: BTreeMap<String, String> = provider_meta.tags.clone().into_iter().collect();
+        stable_fallback_tag(&mut tags);
+        for (tag, version) in &tags {
+            let object_key = format!("{}/{}", public_name, tag);
+            put_text(
                 &storage_clients,
                 &config,
-                &format!("api/{}/checksums", public_name),
-                checksums.clone(),
-            )
-            .await?;
-
-            put_json_pretty(
-                &storage_clients,
-                &config,
-                &format!("api/{}/versions", public_name),
-                versions_json.clone(),
-            )
-            .await?;
-
-            put_json_pretty(
-                &storage_clients,
-                &config,
-                &format!("api/{}/info", public_name),
-                provider_info.clone(),
-            )
-            .await?;
-
-            publish_command_script(
-                &script_ctx,
-                Some(provider_name),
-                ScriptCommand::Install,
-                ScriptFlavor::Sh,
-                &format!("{}/install.sh", public_name),
-            )
-            .await?;
-            publish_command_script(
-                &script_ctx,
-                Some(provider_name),
-                ScriptCommand::Install,
-                ScriptFlavor::Ps1,
-                &format!("{}/install.ps1", public_name),
-            )
-            .await?;
-            publish_command_script(
-                &script_ctx,
-                Some(provider_name),
-                ScriptCommand::Install,
-                ScriptFlavor::Sh,
-                &format!("install/{}", public_name),
-            )
-            .await?;
-            publish_command_script(
-                &script_ctx,
-                Some(provider_name),
-                ScriptCommand::Update,
-                ScriptFlavor::Sh,
-                &format!("{}/update.sh", public_name),
-            )
-            .await?;
-            publish_command_script(
-                &script_ctx,
-                Some(provider_name),
-                ScriptCommand::Update,
-                ScriptFlavor::Ps1,
-                &format!("{}/update.ps1", public_name),
-            )
-            .await?;
-            publish_command_script(
-                &script_ctx,
-                Some(provider_name),
-                ScriptCommand::Update,
-                ScriptFlavor::Sh,
-                &format!("update/{}", public_name),
-            )
-            .await?;
-            publish_command_script(
-                &script_ctx,
-                Some(provider_name),
-                ScriptCommand::Uninstall,
-                ScriptFlavor::Sh,
-                &format!("{}/uninstall.sh", public_name),
-            )
-            .await?;
-            publish_command_script(
-                &script_ctx,
-                Some(provider_name),
-                ScriptCommand::Uninstall,
-                ScriptFlavor::Ps1,
-                &format!("{}/uninstall.ps1", public_name),
-            )
-            .await?;
-            publish_command_script(
-                &script_ctx,
-                Some(provider_name),
-                ScriptCommand::Uninstall,
-                ScriptFlavor::Sh,
-                &format!("uninstall/{}", public_name),
+                &object_key,
+                "text/plain",
+                format!("{}\n", version),
             )
             .await?;
         }
+
+        put_json_pretty(
+            &storage_clients,
+            &config,
+            &format!("api/{}/checksums", public_name),
+            checksums.clone(),
+        )
+        .await?;
+
+        put_json_pretty(
+            &storage_clients,
+            &config,
+            &format!("api/{}/versions", public_name),
+            versions_json.clone(),
+        )
+        .await?;
+
+        put_json_pretty(
+            &storage_clients,
+            &config,
+            &format!("api/{}/info", public_name),
+            provider_info.clone(),
+        )
+        .await?;
+
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Install,
+            ScriptFlavor::Sh,
+            &format!("{}/install.sh", public_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Install,
+            ScriptFlavor::Ps1,
+            &format!("{}/install.ps1", public_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Install,
+            ScriptFlavor::Sh,
+            &format!("install/{}", public_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Update,
+            ScriptFlavor::Sh,
+            &format!("{}/update.sh", public_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Update,
+            ScriptFlavor::Ps1,
+            &format!("{}/update.ps1", public_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Update,
+            ScriptFlavor::Sh,
+            &format!("update/{}", public_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Uninstall,
+            ScriptFlavor::Sh,
+            &format!("{}/uninstall.sh", public_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Uninstall,
+            ScriptFlavor::Ps1,
+            &format!("{}/uninstall.ps1", public_name),
+        )
+        .await?;
+        publish_command_script(
+            &script_ctx,
+            Some(provider_name),
+            ScriptCommand::Uninstall,
+            ScriptFlavor::Sh,
+            &format!("uninstall/{}", public_name),
+        )
+        .await?;
     }
 
     let mirror_url = config

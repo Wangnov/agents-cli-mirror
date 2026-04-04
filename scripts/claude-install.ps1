@@ -92,7 +92,7 @@ try {
         $InstallerPath = $InstallerPath.FullName
     }
 
-    $installerArgs = @("--mirror-url", $MirrorUrl, "--install-dir", $InstallDir, "claude-code", "--tag", $Tag)
+    $installerArgs = @("--mirror-url", $MirrorUrl, "--install-dir", $InstallDir, "claude", "--tag", $Tag)
     if ($Version) { $installerArgs += @("--version", $Version) }
     if ($Upgrade) { $installerArgs += "--upgrade" }
     if ($CheckOnly) { $installerArgs += "--check" }

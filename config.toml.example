@@ -89,7 +89,7 @@ enabled = true
 # - files = ["path/to/file"] (可选；generic gcs/static 推荐显式给出，github 留空表示镜像全部 release assets)
 # - [providers.ui] preset = "acm|codex|claude|gemini" (installer install/update/uninstall UI theme)
 [[providers]]
-name = "claude-code"
+name = "claude"
 enabled = true
 source = "gcs_release"
 update_policy = "tracking" # tracking / pinned / manual
@@ -101,7 +101,8 @@ platforms = [
     "linux-arm64",
     "linux-x64-musl",
     "linux-arm64-musl",
-    "win32-x64"
+    "win32-x64",
+    "win32-arm64"
 ]
 upstream_url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
 files = [
@@ -111,7 +112,8 @@ files = [
     "linux-arm64/claude",
     "linux-x64-musl/claude",
     "linux-arm64-musl/claude",
-    "win32-x64/claude.exe"
+    "win32-x64/claude.exe",
+    "win32-arm64/claude.exe"
 ]
 
 [providers.ui]
@@ -174,6 +176,16 @@ source = "github_release"
 repo = "google-gemini/gemini-cli"
 update_policy = "tracking"
 tags = ["stable", "latest"]
+platforms = [
+    "darwin-x64",
+    "darwin-arm64",
+    "linux-x64",
+    "linux-arm64",
+    "linux-x64-musl",
+    "linux-arm64-musl",
+    "win32-x64",
+    "win32-arm64"
+]
 include_prerelease = false
 
 [providers.ui]

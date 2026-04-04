@@ -532,13 +532,9 @@ mod tests {
             )]),
         );
 
-        let (name, meta) = select_asset_for_platform(
-            &checksums,
-            "v1.0.0",
-            "x86_64-unknown-linux-gnu",
-            "claude-code",
-        )
-        .expect("select asset");
+        let (name, meta) =
+            select_asset_for_platform(&checksums, "v1.0.0", "x86_64-unknown-linux-gnu", "claude")
+                .expect("select asset");
 
         assert_eq!(name, "linux-x64/claude");
         assert_eq!(meta.sha256, "sha-gnu");

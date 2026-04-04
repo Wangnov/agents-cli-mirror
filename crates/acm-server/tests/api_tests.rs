@@ -529,7 +529,7 @@ async fn test_info_exposes_sync_status() {
 }
 
 #[tokio::test]
-async fn test_claude_install_alias_uses_canonical_provider() {
+async fn test_claude_install_uses_canonical_provider() {
     let (_tmp, state) = create_test_state_with(|config| {
         config.server.public_url = Some("http://example.com".to_string());
         config.server.installer_provider = "installer".to_string();
@@ -539,7 +539,7 @@ async fn test_claude_install_alias_uses_canonical_provider() {
             vec!["acm-installer.tar.xz".to_string()],
         ));
         config.providers.push(static_provider(
-            "claude-code",
+            "claude",
             "2.0.0",
             vec!["darwin-arm64/claude".to_string()],
         ));
@@ -547,7 +547,7 @@ async fn test_claude_install_alias_uses_canonical_provider() {
     .await;
     seed_provider_file(
         &state,
-        "claude-code",
+        "claude",
         "2.0.0",
         "darwin-arm64/claude",
         b"fake-claude-binary",
@@ -559,41 +559,82 @@ async fn test_claude_install_alias_uses_canonical_provider() {
         .clone()
         .oneshot(create_request("GET", "/claude/install.sh"))
         .await
-        .expect("claude alias response");
+        .expect("claude response");
     assert_eq!(response.status(), StatusCode::OK);
 
     let body = response
         .into_body()
         .collect()
         .await
-        .expect("alias body")
+        .expect("body")
         .to_bytes();
     let text = String::from_utf8_lossy(&body);
-    assert!(text.contains(r#"COMMAND_ARGS+=("claude-code")"#));
+    assert!(text.contains(r#"COMMAND_ARGS+=("claude")"#));
 
     let info = app
         .clone()
         .oneshot(create_request("GET", "/api/claude/info"))
         .await
-        .expect("alias info response");
+        .expect("info response");
     assert_eq!(info.status(), StatusCode::OK);
 
     let latest = app
         .oneshot(create_request("GET", "/claude/latest"))
         .await
-        .expect("alias tag response");
+        .expect("tag response");
     assert_eq!(latest.status(), StatusCode::OK);
     let body = latest
         .into_body()
         .collect()
         .await
-        .expect("alias tag body")
+        .expect("tag body")
         .to_bytes();
     assert_eq!(&body[..], b"2.0.0");
 }
 
 #[tokio::test]
-async fn test_publish_emits_claude_public_alias_files() {
+async fn test_legacy_claude_paths_are_not_supported() {
+    let (_tmp, state) = create_test_state_with(|config| {
+        config.server.public_url = Some("http://example.com".to_string());
+        config.server.installer_provider = "installer".to_string();
+        config.providers.push(static_provider(
+            "installer",
+            "1.0.0",
+            vec!["acm-installer.tar.xz".to_string()],
+        ));
+        config.providers.push(static_provider(
+            "claude",
+            "2.0.0",
+            vec!["darwin-arm64/claude".to_string()],
+        ));
+    })
+    .await;
+    seed_provider_file(
+        &state,
+        "claude",
+        "2.0.0",
+        "darwin-arm64/claude",
+        b"fake-claude-binary",
+    )
+    .await;
+    let app = server::build_router(state);
+
+    for path in [
+        "/claude-code/install.sh",
+        "/claude-code/latest",
+        "/api/claude-code/info",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(create_request("GET", path))
+            .await
+            .expect("path response");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn test_publish_emits_claude_public_files() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let mut config = Config {
         cache: CacheConfig {
@@ -610,7 +651,7 @@ async fn test_publish_emits_claude_public_alias_files() {
         vec!["acm-installer.tar.xz".to_string()],
     ));
     config.providers.push(static_provider(
-        "claude-code",
+        "claude",
         "2.0.0",
         vec!["darwin-arm64/claude".to_string()],
     ));
@@ -621,7 +662,7 @@ async fn test_publish_emits_claude_public_alias_files() {
         .expect("build state");
     seed_provider_file(
         &state,
-        "claude-code",
+        "claude",
         "2.0.0",
         "darwin-arm64/claude",
         b"fake-claude-binary",
@@ -629,28 +670,28 @@ async fn test_publish_emits_claude_public_alias_files() {
     .await;
 
     let publish_cache = CacheManager::new(&config.cache).expect("create publish cache");
-    publish::publish(config.clone(), publish_cache, Some("claude-code"))
+    publish::publish(config.clone(), publish_cache, Some("claude"))
         .await
         .expect("publish local outputs");
 
     let published_root = config.cache.dir.join("published");
-    let install_alias = tokio::fs::read_to_string(published_root.join("claude/install.sh"))
+    let install_script = tokio::fs::read_to_string(published_root.join("claude/install.sh"))
         .await
-        .expect("read claude alias install script");
-    assert!(install_alias.contains("claude-code"));
+        .expect("read claude install script");
+    assert!(install_script.contains("claude"));
 
     let install_short = tokio::fs::read_to_string(published_root.join("install/claude"))
         .await
-        .expect("read short install alias");
-    assert!(install_short.contains("claude-code"));
+        .expect("read short install script");
+    assert!(install_short.contains("claude"));
 
-    let alias_info = tokio::fs::read_to_string(published_root.join("api/claude/info"))
+    let info = tokio::fs::read_to_string(published_root.join("api/claude/info"))
         .await
-        .expect("read claude alias info");
-    assert!(alias_info.contains("claude-code"));
+        .expect("read claude info");
+    assert!(info.contains("claude"));
 
-    let alias_tag = tokio::fs::read_to_string(published_root.join("claude/latest"))
+    let tag = tokio::fs::read_to_string(published_root.join("claude/latest"))
         .await
-        .expect("read claude alias tag");
-    assert_eq!(alias_tag, "2.0.0\n");
+        .expect("read claude tag");
+    assert_eq!(tag, "2.0.0\n");
 }

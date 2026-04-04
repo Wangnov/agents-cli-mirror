@@ -29,14 +29,14 @@ msg() {
     case "$LANG_CODE" in
         zh)
             case "$key" in
-                "uninstalling") printf "正在卸载 Claude Code...\n" ;;
+                "uninstalling") printf "正在卸载 Claude...\n" ;;
                 "removed")      printf "已删除: %s\n" "$1" ;;
                 "complete")     printf "卸载完成!\n" ;;
             esac
             ;;
         *)
             case "$key" in
-                "uninstalling") printf "Uninstalling Claude Code...\n" ;;
+                "uninstalling") printf "Uninstalling Claude...\n" ;;
                 "removed")      printf "Removed: %s\n" "$1" ;;
                 "complete")     printf "Uninstallation complete!\n" ;;
             esac

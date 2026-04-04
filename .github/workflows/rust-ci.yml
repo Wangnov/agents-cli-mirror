@@ -10,6 +10,7 @@ on:
       - "dist-workspace.toml"
       - "config.toml.example"
       - ".github/workflows/rust-ci.yml"
+      - ".github/workflows/release.yml"
   pull_request:
     paths:
       - "crates/**"
@@ -19,6 +20,7 @@ on:
       - "dist-workspace.toml"
       - "config.toml.example"
       - ".github/workflows/rust-ci.yml"
+      - ".github/workflows/release.yml"
 
 jobs:
   check:
@@ -29,8 +31,16 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-dist
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.30.3/cargo-dist-installer.sh | sh
+
       - name: Rustfmt
         run: cargo fmt --check
+
+      - name: Dist plan
+        run: cargo dist plan --output-format=json >/dev/null
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings

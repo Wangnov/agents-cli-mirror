@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-Rust 实现的 CLI 工具镜像服务，为 [Agents APP](https://github.com/example/agents-app) (Tauri 客户端) 提供后端支持，同时提供御三家（Claude Code、Codex、Gemini CLI）的安装脚本供用户手动安装。
+Rust 实现的 CLI 工具镜像服务，为 [Agents APP](https://github.com/example/agents-app) (Tauri 客户端) 提供后端支持，同时提供御三家（Claude、Codex、Gemini CLI）的安装脚本供用户手动安装。
 
 ## 技术栈
 
@@ -26,18 +26,8 @@ agents-cli-mirror/
 │   ├── cache.rs             # 缓存管理 (版本清理、元数据)
 │   ├── error.rs             # 错误类型定义
 │   ├── retry.rs             # 请求重试机制
-│   └── providers/
-│       ├── mod.rs
-│       ├── claude_code.rs   # Claude Code (GCS 同步)
-│       ├── codex.rs         # Codex (GitHub Release)
-│       ├── gemini.rs        # Gemini CLI (GitHub Release)
-│       ├── node.rs          # Node.js (本地缓存验证)
-│       └── node_pty.rs      # node-pty (本地缓存验证)
-├── scripts/                 # 安装脚本 (include_str! 嵌入)
-│   ├── claude-code-install.sh/ps1
-│   ├── codex-install.sh/ps1
-│   ├── gemini-install.sh/ps1
-│   └── *-uninstall.sh/ps1
+│   └── providers/           # Claude / Codex / Gemini / Node provider 实现
+├── scripts/                 # 安装与卸载脚本
 ├── tests/
 │   └── api_tests.rs         # 集成测试
 ├── .github/
@@ -78,7 +68,7 @@ cargo fmt
 
 ## Provider 设计模式
 
-### 主动同步 Provider (Claude Code / Codex / Gemini)
+### 主动同步 Provider (Claude / Codex / Gemini)
 
 从上游拉取并缓存：
 1. `fetch_upstream_tag()` - 获取上游版本

@@ -16,7 +16,7 @@ INSTALLER_VERSION=""
 
 usage() {
     cat <<'EOF'
-Usage: claude-code-install.sh [options]
+Usage: claude-install.sh [options]
   --tag <tag>              tag (default: latest)
   --version <version>      install a specific version
   --upgrade                force reinstall
@@ -231,7 +231,7 @@ fi
 TMP_BIN=$(extract_installer "$TMP_ARCHIVE" "$TMP_DIR" "$BIN_NAME")
 chmod +x "$TMP_BIN"
 
-ARGS=(claude-code --tag "$TAG")
+ARGS=(claude --tag "$TAG")
 if [[ -n "$VERSION" ]]; then
     ARGS+=(--version "$VERSION")
 fi

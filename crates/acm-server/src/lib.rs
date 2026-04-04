@@ -5,7 +5,6 @@ pub mod error;
 pub mod http_client;
 pub mod importer;
 pub mod progress;
-pub(crate) mod provider_aliases;
 pub mod providers;
 pub mod publish;
 pub mod retry;
