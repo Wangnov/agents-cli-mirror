@@ -259,17 +259,9 @@ detect_platform() {{
             esac
             ;;
         linux)
-            local ldd_output=""
-            if command -v ldd >/dev/null 2>&1; then
-                ldd_output="$(ldd --version 2>&1 || true)"
-            fi
-            if printf '%s' "$ldd_output" | grep -qi musl; then
-                libc="-musl"
-            elif getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
-                libc="-gnu"
-            else
-                libc="-gnu"
-            fi
+            # Prefer the musl bootstrap installer so old glibc systems can start
+            # the installer. The installed provider still chooses its own target.
+            libc="-musl"
             case "$arch" in
                 x86_64) echo "x86_64-unknown-linux${{libc}}" ;;
                 aarch64|arm64) echo "aarch64-unknown-linux${{libc}}" ;;
@@ -351,7 +343,26 @@ bin_name = sys.argv[4]
 versions = checksums.get(version)
 if not isinstance(versions, dict):
     raise SystemExit('installer version not found in checksums')
-entry = versions.get(platform) or versions.get('universal')
+
+def platform_preferences(value):
+    if value == 'x86_64-unknown-linux-musl':
+        return ['x86_64-unknown-linux-musl', 'x86_64-unknown-linux-gnu']
+    if value == 'aarch64-unknown-linux-musl':
+        return ['aarch64-unknown-linux-musl', 'aarch64-unknown-linux-gnu']
+    if value == 'x86_64-unknown-linux-gnu':
+        return ['x86_64-unknown-linux-musl', 'x86_64-unknown-linux-gnu']
+    if value == 'aarch64-unknown-linux-gnu':
+        return ['aarch64-unknown-linux-musl', 'aarch64-unknown-linux-gnu']
+    return [value]
+
+platform_prefs = platform_preferences(platform)
+entry = None
+for preferred_platform in platform_prefs:
+    entry = versions.get(preferred_platform)
+    if entry is not None:
+        break
+if entry is None:
+    entry = versions.get('universal')
 if entry is None and versions:
     entry = next(iter(versions.values()))
 if not isinstance(entry, dict):
@@ -391,10 +402,16 @@ if isinstance(files, dict) and files:
             return 4
         return 99
 
+    def platform_priority(name: str) -> int:
+        for index, preferred_platform in enumerate(platform_prefs):
+            if preferred_platform in name:
+                return index
+        return 99
+
     filename = min(
         preferred,
         key=lambda name: (
-            0 if platform in name else 1,
+            platform_priority(name),
             installable_priority(name),
             name,
         ),
@@ -413,9 +430,32 @@ PY
             --arg version "$version" \
             --arg platform "$platform" \
             --arg bin_name "$bin_name" '
+                def platform_preferences:
+                    if $platform == "x86_64-unknown-linux-musl" then ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"]
+                    elif $platform == "aarch64-unknown-linux-musl" then ["aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"]
+                    elif $platform == "x86_64-unknown-linux-gnu" then ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"]
+                    elif $platform == "aarch64-unknown-linux-gnu" then ["aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"]
+                    else [$platform] end;
+                def installable_priority:
+                    ascii_downcase as $lower
+                    | if ($lower | endswith(".sha256")) or ($lower | endswith(".sum")) or ($lower | endswith(".json")) then 99
+                      elif ($platform | contains("windows")) and ($lower | endswith(".zip")) then 0
+                      elif ($platform | contains("windows")) and ($lower | endswith(".exe")) then 1
+                      elif ($platform | contains("windows")) then 99
+                      elif $lower | endswith(".tar.gz") then 0
+                      elif $lower | endswith(".tgz") then 1
+                      elif $lower | endswith(".tar.xz") then 2
+                      elif $lower | endswith(".zip") then 3
+                      elif ($lower | contains(".") | not) then 4
+                      else 99 end;
+                def platform_priority($platform_prefs):
+                    . as $name
+                    | first(range(0; ($platform_prefs | length)) as $idx | select($name | contains($platform_prefs[$idx])) | $idx) // 99;
+
                 .[$version] as $versions
                 | if ($versions | type) != "object" then error("installer version not found in checksums") else . end
-                | ($versions[$platform] // $versions["universal"] // (($versions | to_entries | .[0].value)?)) as $entry
+                | platform_preferences as $platform_prefs
+                | (first($platform_prefs[] as $candidate | $versions[$candidate] // empty) // $versions["universal"] // (($versions | to_entries | .[0].value)?)) as $entry
                 | if ($entry | type) != "object" then error("invalid checksum entry") else . end
                 | ($entry.files // null) as $files
                 | if ($files | type) == "object" and ($files | length) > 0 then
@@ -427,19 +467,7 @@ PY
                         or startswith($bin_name + ".")
                     ) ]) as $preferred
                     | (if ($preferred | length) > 0 then $preferred else $candidates end) as $selected
-                    | def installable_priority:
-                        ascii_downcase as $lower
-                        | if ($lower | endswith(".sha256")) or ($lower | endswith(".sum")) or ($lower | endswith(".json")) then 99
-                          elif ($platform | contains("windows")) and ($lower | endswith(".zip")) then 0
-                          elif ($platform | contains("windows")) and ($lower | endswith(".exe")) then 1
-                          elif ($platform | contains("windows")) then 99
-                          elif $lower | endswith(".tar.gz") then 0
-                          elif $lower | endswith(".tgz") then 1
-                          elif $lower | endswith(".tar.xz") then 2
-                          elif $lower | endswith(".zip") then 3
-                          elif ($lower | contains(".") | not) then 4
-                          else 99 end;
-                    | ($selected | min_by([(if contains($platform) then 0 else 1 end), installable_priority, .])) as $filename
+                    | ($selected | min_by([platform_priority($platform_prefs), installable_priority, .])) as $filename
                     | $filename, ($files[$filename].sha256 // $entry.sha256)
                   else
                     ($entry.filename // error("installer filename or sha256 missing")),
@@ -877,7 +905,8 @@ mod tests {
 
         assert!(script.contains("\"$INSTALLER_VERSION\" \"$PLATFORM\" \"$BIN_NAME\""));
         assert!(script.contains("name.startswith(f\"{bin_name}-\")"));
-        assert!(script.contains("0 if platform in name else 1"));
+        assert!(script.contains("platform_priority(name)"));
+        assert!(script.contains("def platform_priority($platform_prefs):"));
     }
 
     #[test]
@@ -1001,7 +1030,7 @@ mod tests {
     }
 
     #[test]
-    fn render_sh_script_detects_musl_without_false_positive_file_heuristics() {
+    fn render_sh_script_prefers_musl_bootstrap_on_linux() {
         let script = render_bootstrap_script(
             ScriptCommand::Install,
             Some("tool-a"),
@@ -1012,9 +1041,16 @@ mod tests {
         )
         .expect("render shell bootstrap script");
 
-        assert!(script.contains("ldd_output=\"$(ldd --version 2>&1 || true)\""));
-        assert!(script.contains("printf '%s' \"$ldd_output\" | grep -qi musl"));
-        assert!(script.contains("getconf GNU_LIBC_VERSION >/dev/null 2>&1"));
+        assert!(script.contains("libc=\"-musl\""));
+        assert!(script.contains("x86_64-unknown-linux${libc}"));
+        assert!(script.contains("aarch64-unknown-linux${libc}"));
+        assert!(
+            script.contains("return ['x86_64-unknown-linux-musl', 'x86_64-unknown-linux-gnu']")
+        );
+        assert!(
+            script.contains("then [\"x86_64-unknown-linux-musl\", \"x86_64-unknown-linux-gnu\"]")
+        );
+        assert!(!script.contains("getconf GNU_LIBC_VERSION"));
         assert!(!script.contains("ls /lib/ld-musl-* >/dev/null 2>&1"));
     }
 }
