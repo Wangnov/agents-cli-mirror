@@ -46,8 +46,8 @@ request_timeout_seconds = 3600
 # Cache settings
 [cache]
 dir = "./cache"
-# 设为 0 表示只保留 tag 引用的版本（例如 stable/latest）
-max_versions = 10
+# 保留最近的非 tag 历史版本数量；tag 引用的版本（例如 latest）始终保留。
+max_versions = 1
 
 # Storage settings (local / s3)
 [storage]
