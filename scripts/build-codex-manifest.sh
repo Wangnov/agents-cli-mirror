@@ -45,13 +45,24 @@ if [ -z "$release_json" ]; then
   exit 1
 fi
 
-# Pass the release JSON via env, not stdin: the heredoc below already occupies
-# python's stdin (it's the program source for `python3 -`).
-RELEASE_JSON="$release_json" python3 - "$out" <<'PY'
-import os, sys, json
+# Write the release JSON to a file because openai/codex releases have many
+# assets; passing the full response through the environment can exceed Linux
+# env/arg limits before Python starts.
+tmp_json="$(mktemp "${TMPDIR:-/tmp}/codex-release.XXXXXX")"
+cleanup() {
+  rm -f "$tmp_json"
+}
+trap cleanup EXIT
+printf '%s' "$release_json" > "$tmp_json"
 
-out = sys.argv[1]
-rel = json.loads(os.environ["RELEASE_JSON"])
+# Keep python's stdin for the heredoc program source and pass data paths as argv.
+python3 - "$tmp_json" "$out" <<'PY'
+import sys, json
+
+release_path = sys.argv[1]
+out = sys.argv[2]
+with open(release_path, encoding="utf-8") as f:
+    rel = json.load(f)
 
 # platform triple -> (canonical asset name, installed binary name).
 # musl entries also serve the matching gnu host (see install script hints).

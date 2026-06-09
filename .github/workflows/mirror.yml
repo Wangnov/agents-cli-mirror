@@ -182,6 +182,61 @@ jobs:
             ' "$manifest" > "$keys_file"
           }
 
+          manifest_platform_entries() {
+            local manifest="$1"
+            local entries_file="$2"
+
+            jq -S -c '
+              def invalid($msg): error($msg);
+              if ((.platforms | type) != "object" or (.platforms | length) == 0) then
+                invalid("invalid manifest platforms")
+              else
+                .platforms
+                | to_entries
+                | sort_by(.key)
+                | map(
+                    if ((.key | type) != "string" or .key == "") then
+                      invalid("invalid manifest platform key")
+                    elif ((.value | type) != "object") then
+                      invalid("invalid manifest platform entry")
+                    elif ((.value.file | type) != "string" or .value.file == "") then
+                      invalid("invalid manifest artifact file")
+                    elif ((.value.sha256 | type) != "string" or .value.sha256 == "") then
+                      invalid("invalid manifest artifact sha256")
+                    elif ((.value.size | type) != "number") then
+                      invalid("invalid manifest artifact size")
+                    else
+                      {
+                        platform: .key,
+                        file: .value.file,
+                        sha256: .value.sha256,
+                        size: .value.size
+                      }
+                    end
+                  )
+              end
+            ' "$manifest" > "$entries_file"
+          }
+
+          manifest_platform_entries_match() {
+            local provider="$1"
+            local live_manifest="$2"
+            local built_manifest="$3"
+            local live_entries="$work_root/${provider}-live-platforms.json"
+            local built_entries="$work_root/${provider}-built-platforms.json"
+
+            if ! manifest_platform_entries "$live_manifest" "$live_entries"; then
+              echo "::warning:: $provider live manifest platform entries could not be compared"
+              return 1
+            fi
+            if ! manifest_platform_entries "$built_manifest" "$built_entries"; then
+              echo "::error:: $provider built manifest platform entries could not be compared" >&2
+              exit 1
+            fi
+
+            cmp -s "$live_entries" "$built_entries"
+          }
+
           backend_objects_present() {
             local backend_name="$1"
             local endpoint="$2"
@@ -278,6 +333,7 @@ jobs:
             echo "==> $provider: stale check against live mirror"
             live_manifest="$work_root/${provider}-live.json"
             live_version=""
+            live_platform_entries_match=0
             if curl -fsSL --retry 3 --retry-delay 2 \
               -o "$live_manifest" \
               "$mirror_url/$provider/latest.json"; then
@@ -287,6 +343,13 @@ jobs:
             fi
 
             if [ "$live_version" = "$built_version" ]; then
+              echo "$provider live version matches built version ($built_version); comparing platform files"
+              if manifest_platform_entries_match "$provider" "$live_manifest" "$manifest"; then
+                live_platform_entries_match=1
+              fi
+            fi
+
+            if [ "$live_version" = "$built_version" ] && [ "$live_platform_entries_match" -eq 1 ]; then
               echo "$provider up to date ($built_version); checking enabled backend completeness"
               if enabled_backends_have_objects "$provider" "$manifest"; then
                 echo "$provider enabled backends already have all current objects; syncing latest manifest and installers"
@@ -306,10 +369,14 @@ jobs:
               fi
 
               echo "$provider unchanged version ($built_version) is missing objects on an enabled backend; running full download and sync"
+            elif [ "$live_version" = "$built_version" ]; then
+              echo "$provider unchanged version ($built_version) has changed platform files; running full download and sync"
             fi
 
-            if [ "$live_version" = "$built_version" ]; then
+            if [ "$live_version" = "$built_version" ] && [ "$live_platform_entries_match" -eq 1 ]; then
               echo "$provider backfill needed for current version $built_version"
+            elif [ "$live_version" = "$built_version" ]; then
+              echo "$provider republish needed for current version $built_version"
             elif [ -n "$live_version" ]; then
               echo "$provider update needed: live=$live_version built=$built_version"
             else
