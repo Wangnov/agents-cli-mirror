@@ -42,7 +42,7 @@ installer_provider = "installer"
 
 [cache]
 dir = "./cache"
-max_versions = 10
+max_versions = 1
 
 [storage]
 mode = "local"

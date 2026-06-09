@@ -102,6 +102,7 @@ where
 
     if cached_version.as_ref() == Some(&upstream_version) {
         info!("Tag {} is up to date: {}", ctx.tag, upstream_version);
+        cleanup_old_versions(ctx, delete_remote_versions).await?;
         return Ok(None);
     }
 
@@ -124,6 +125,19 @@ where
         })
         .await?;
 
+    cleanup_old_versions(ctx, delete_remote_versions).await?;
+
+    Ok(Some(upstream_version))
+}
+
+async fn cleanup_old_versions<FDelete, FutDelete>(
+    ctx: SyncTagContext<'_>,
+    delete_remote_versions: FDelete,
+) -> Result<()>
+where
+    FDelete: FnOnce(Vec<VersionMetadata>) -> FutDelete,
+    FutDelete: Future<Output = ()>,
+{
     let deleted = ctx.cache.cleanup_old_versions(ctx.provider_name).await?;
     if !deleted.is_empty() {
         info!("Cleaned up {} old versions", deleted.len());
@@ -131,14 +145,16 @@ where
             delete_remote_versions(deleted).await;
         }
     }
-
-    Ok(Some(upstream_version))
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::{PlatformMetadata, ProviderMetadata};
     use crate::config::CacheConfig;
+    use chrono::{Duration, Utc};
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
@@ -203,5 +219,75 @@ mod tests {
 
         assert!(result.is_none());
         assert_eq!(fetch_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_sync_tag_cleans_old_versions_when_tag_is_current() {
+        let (_dir, cache) = create_test_cache();
+        let now = Utc::now();
+        cache
+            .update_provider_metadata("test-provider", |meta| {
+                *meta = ProviderMetadata {
+                    tags: HashMap::from([("latest".to_string(), "v4".to_string())]),
+                    versions: (1..=4)
+                        .map(|version| {
+                            let version_name = format!("v{}", version);
+                            (
+                                version_name.clone(),
+                                VersionMetadata {
+                                    version: version_name,
+                                    downloaded_at: now - Duration::days(5 - version),
+                                    platforms: HashMap::from([(
+                                        "universal".to_string(),
+                                        PlatformMetadata {
+                                            sha256: format!("sha256-{version}"),
+                                            size: version as u64,
+                                            filename: format!("tool-{version}"),
+                                            files: HashMap::new(),
+                                        },
+                                    )]),
+                                },
+                            )
+                        })
+                        .collect(),
+                    updated_at: None,
+                    sync: Default::default(),
+                };
+            })
+            .await
+            .expect("seed provider metadata");
+        cache
+            .write_tag("test-provider", "latest", "v4")
+            .await
+            .expect("seed latest tag");
+
+        let deleted_count = Arc::new(AtomicUsize::new(0));
+        let deleted_count_for_closure = deleted_count.clone();
+        let result = sync_tag_common(
+            SyncTagContext {
+                cache: &cache,
+                enabled: true,
+                storage_mode: &StorageMode::S3,
+                provider_name: "test-provider",
+                tag: "latest",
+            },
+            ProviderUpdatePolicy::Tracking,
+            |_| async { Ok("v4".to_string()) },
+            |_| async { Ok(()) },
+            move |versions| {
+                let deleted_count = deleted_count_for_closure.clone();
+                async move {
+                    deleted_count.fetch_add(versions.len(), Ordering::SeqCst);
+                }
+            },
+        )
+        .await
+        .expect("sync tag");
+
+        assert!(result.is_none());
+        assert_eq!(deleted_count.load(Ordering::SeqCst), 1);
+        let mut versions = cache.list_versions("test-provider").await;
+        versions.sort();
+        assert_eq!(versions, vec!["v2", "v3", "v4"]);
     }
 }
