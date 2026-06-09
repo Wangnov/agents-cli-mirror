@@ -116,17 +116,35 @@ jobs:
 
           verify_live_latest() {
             local provider="$1"
-            local expected_version="$2"
+            local built_manifest="$2"
             local verified_manifest="$3"
+            local expected_version
             local verified_version
+            local live_entries="$work_root/${provider}-verified-platforms.json"
+            local built_entries="$work_root/${provider}-expected-platforms.json"
 
             curl -fsSL --retry 6 --retry-delay 5 \
               -o "$verified_manifest" \
               "$mirror_url/$provider/latest.json?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${provider}"
+            expected_version="$(jq -er '.version' "$built_manifest")"
             verified_version="$(jq -er '.version' "$verified_manifest")"
 
             if [ "$verified_version" != "$expected_version" ]; then
               echo "::error:: $provider verification failed: expected $expected_version, got $verified_version" >&2
+              exit 1
+            fi
+
+            if ! manifest_platform_entries "$verified_manifest" "$live_entries"; then
+              echo "::error:: $provider verification failed: live latest.json platform entries are invalid" >&2
+              exit 1
+            fi
+            if ! manifest_platform_entries "$built_manifest" "$built_entries"; then
+              echo "::error:: $provider verification failed: built manifest platform entries are invalid" >&2
+              exit 1
+            fi
+            if ! cmp -s "$live_entries" "$built_entries"; then
+              echo "::error:: $provider verification failed: live latest.json platform files differ from built manifest" >&2
+              diff -u "$built_entries" "$live_entries" >&2 || true
               exit 1
             fi
 
@@ -334,12 +352,33 @@ jobs:
             live_manifest="$work_root/${provider}-live.json"
             live_version=""
             live_platform_entries_match=0
-            if curl -fsSL --retry 3 --retry-delay 2 \
+            if live_status="$(curl -sSL --retry 3 --retry-delay 2 \
               -o "$live_manifest" \
-              "$mirror_url/$provider/latest.json"; then
-              live_version="$(jq -r '.version // empty' "$live_manifest")"
+              -w '%{http_code}' \
+              "$mirror_url/$provider/latest.json")"; then
+              case "$live_status" in
+                200)
+                  if ! live_version="$(jq -er '.version // empty' "$live_manifest" 2>/dev/null)"; then
+                    echo "::warning:: $provider live latest.json is missing a version or is not valid JSON; continuing with sync"
+                    live_version=""
+                  fi
+                  ;;
+                404|410)
+                  echo "::warning:: $provider live latest.json is missing (HTTP $live_status); continuing with sync"
+                  ;;
+                401|403)
+                  echo "::error:: $provider live latest.json access failed (HTTP $live_status)" >&2
+                  exit 1
+                  ;;
+                *)
+                  echo "::error:: $provider live latest.json fetch returned HTTP $live_status" >&2
+                  exit 1
+                  ;;
+              esac
             else
-              echo "::warning:: $provider live latest.json could not be fetched; continuing with sync"
+              curl_status="$?"
+              echo "::error:: $provider live latest.json could not be fetched (curl exit $curl_status)" >&2
+              exit 1
             fi
 
             if [ "$live_version" = "$built_version" ]; then
@@ -361,9 +400,12 @@ jobs:
                 echo "==> $provider: sync secondary S3 latest manifest and installers"
                 PROVIDERS="$provider" bash scripts/sync-secondary-s3.sh "$artifacts_root"
 
+                echo "==> $provider: prune"
+                PROVIDERS="$provider" bash scripts/prune.sh
+
                 echo "==> $provider: verify live mirror objects"
                 verified_manifest="$work_root/${provider}-verified.json"
-                verify_live_latest "$provider" "$built_version" "$verified_manifest"
+                verify_live_latest "$provider" "$manifest" "$verified_manifest"
                 verify_live_install_scripts "$provider"
                 continue
               fi
@@ -397,5 +439,5 @@ jobs:
 
             echo "==> $provider: verify live mirror"
             verified_manifest="$work_root/${provider}-verified.json"
-            verify_live_latest "$provider" "$built_version" "$verified_manifest"
+            verify_live_latest "$provider" "$manifest" "$verified_manifest"
           done
