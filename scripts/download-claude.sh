@@ -10,7 +10,7 @@
 # <claude upstream_url>/<version>/<key>/<file>
 #
 # Usage: download-claude.sh <path-to-claude-latest.json> <artifacts-root>
-# CLAUDE_CONFIG (optional) points at an alternate config.cloud.toml path.
+# CLAUDE_UPSTREAM_URL (optional) points at a compatible Claude Code GCS root.
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -20,14 +20,11 @@ fi
 
 manifest="$1"
 artifacts_root="$2"
-config="${CLAUDE_CONFIG:-config.cloud.toml}"
+base="${CLAUDE_UPSTREAM_URL:-https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases}"
+base="${base%/}"
 
 if [ ! -f "$manifest" ]; then
   echo "::error:: manifest not found: $manifest" >&2
-  exit 1
-fi
-if [ ! -f "$config" ]; then
-  echo "::error:: config not found: $config" >&2
   exit 1
 fi
 
@@ -51,102 +48,6 @@ sha256_file() {
 file_size() {
   wc -c < "$1" | tr -d '[:space:]'
 }
-
-config_json="$tmpdir/config.json"
-python3 - "$config" > "$config_json" <<'PY'
-import ast
-import json
-import re
-import sys
-
-path = sys.argv[1]
-
-def strip_comment(line):
-    in_quote = False
-    escaped = False
-    out = []
-    for ch in line:
-        if escaped:
-            out.append(ch)
-            escaped = False
-            continue
-        if ch == "\\" and in_quote:
-            out.append(ch)
-            escaped = True
-            continue
-        if ch == '"':
-            in_quote = not in_quote
-            out.append(ch)
-            continue
-        if ch == "#" and not in_quote:
-            break
-        out.append(ch)
-    return "".join(out).strip()
-
-providers = []
-current = None
-pending_key = None
-pending_value = []
-
-def finish_pending():
-    global pending_key, pending_value
-    if pending_key is not None:
-        current[pending_key] = ast.literal_eval("\n".join(pending_value))
-        pending_key = None
-        pending_value = []
-
-with open(path, "r", encoding="utf-8") as f:
-    for raw in f:
-        line = strip_comment(raw)
-        if not line:
-            continue
-        if pending_key is not None:
-            pending_value.append(line)
-            if "]" in line:
-                finish_pending()
-            continue
-        if line == "[[providers]]":
-            if current is not None:
-                providers.append(current)
-            current = {}
-            continue
-        if current is None:
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            continue
-        match = re.match(r"^([A-Za-z0-9_]+)\s*=\s*(.+)$", line)
-        if not match:
-            continue
-        key, value = match.group(1), match.group(2).strip()
-        if value.startswith("[") and "]" not in value:
-            pending_key = key
-            pending_value = [value]
-            continue
-        try:
-            current[key] = ast.literal_eval(value)
-        except Exception:
-            current[key] = value
-
-finish_pending()
-if current is not None:
-    providers.append(current)
-
-claude = next((p for p in providers if p.get("name") == "claude"), None)
-if claude is None:
-    sys.exit("::error:: config has no [[providers]] block with name=\"claude\"")
-upstream = claude.get("upstream_url")
-if not upstream:
-    sys.exit("::error:: claude provider has no upstream_url")
-print(json.dumps({"upstream_url": upstream.rstrip("/")}))
-PY
-
-base="$(python3 - "$config_json" <<'PY'
-import json
-import sys
-with open(sys.argv[1]) as f:
-    print(json.load(f)["upstream_url"])
-PY
-)"
 
 tasks="$tmpdir/tasks.tsv"
 version_file="$tmpdir/version.txt"

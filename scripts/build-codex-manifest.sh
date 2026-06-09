@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Build codex/latest.json from an openai/codex GitHub release.
 #
-# We mirror only the 6 installable CLI archives (one per platform family) — the
-# acm-client selection logic proved everything else (codex-app-server, npm,
-# wheels, .dmg, alt formats) is never chosen. Linux gnu hosts use the musl
-# build (static, portable), so 2 linux archives cover all 4 linux platforms.
+# We mirror only the 6 installable CLI archives (one per platform family).
+# The other release assets (codex-app-server, npm, wheels, .dmg, alt formats)
+# are outside this pure CLI mirror. Linux gnu hosts use the musl build
+# (static, portable), so 2 linux archives cover all 4 linux platforms.
 #
 # sha256 comes straight from GitHub's `asset.digest` ("sha256:<hex>"), so we
 # never download the artifact just to hash it — the manifest is built from the

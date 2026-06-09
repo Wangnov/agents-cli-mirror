@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # Build claude/latest.json from the Claude Code GCS release bucket.
 #
-# Observed protocol, confirmed against config.cloud.toml and GCS on 2026-06-09:
-# - config.cloud.toml has provider name="claude", source="gcs_release", and
-#   upstream_url=https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases
+# Observed GCS protocol on 2026-06-09:
 # - Latest discovery is a plain-text pointer at <upstream_url>/latest.
 #   A separate <upstream_url>/stable pointer exists, but this pure mirror tracks
-#   latest because the claude provider block declares tags=["latest"].
+#   latest.
 # - Per-version metadata lives at <upstream_url>/<version>/manifest.json.
 #   It contains version, buildDate, and platforms.<key>.{binary,checksum,size}.
 # - Per-platform binaries live at <upstream_url>/<version>/<key>/<binary>.
@@ -18,7 +16,7 @@
 # {"provider","version","published_at","platforms":{"<key>":{"file","sha256","size","bin"}}}
 #
 # Usage: build-claude-manifest.sh <out.json>
-# CLAUDE_CONFIG (optional) points at an alternate config.cloud.toml path.
+# CLAUDE_UPSTREAM_URL (optional) points at a compatible Claude Code GCS root.
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
@@ -27,12 +25,7 @@ if [ "$#" -ne 1 ]; then
 fi
 
 out="$1"
-config="${CLAUDE_CONFIG:-config.cloud.toml}"
-
-if [ ! -f "$config" ]; then
-  echo "::error:: config not found: $config" >&2
-  exit 1
-fi
+claude_upstream_url="${CLAUDE_UPSTREAM_URL:-https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases}"
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/claude-manifest.XXXXXX")"
 cleanup() {
@@ -56,112 +49,28 @@ file_size() {
 }
 
 config_json="$tmpdir/config.json"
-python3 - "$config" > "$config_json" <<'PY'
-import ast
+python3 - "$claude_upstream_url" > "$config_json" <<'PY'
 import json
-import os
-import re
 import sys
 
-path = sys.argv[1]
-
-def strip_comment(line):
-    in_quote = False
-    escaped = False
-    out = []
-    for ch in line:
-        if escaped:
-            out.append(ch)
-            escaped = False
-            continue
-        if ch == "\\" and in_quote:
-            out.append(ch)
-            escaped = True
-            continue
-        if ch == '"':
-            in_quote = not in_quote
-            out.append(ch)
-            continue
-        if ch == "#" and not in_quote:
-            break
-        out.append(ch)
-    return "".join(out).strip()
-
-providers = []
-current = None
-pending_key = None
-pending_value = []
-
-def finish_pending():
-    global pending_key, pending_value
-    if pending_key is not None:
-        current[pending_key] = ast.literal_eval("\n".join(pending_value))
-        pending_key = None
-        pending_value = []
-
-with open(path, "r", encoding="utf-8") as f:
-    for raw in f:
-        line = strip_comment(raw)
-        if not line:
-            continue
-        if pending_key is not None:
-            pending_value.append(line)
-            if "]" in line:
-                finish_pending()
-            continue
-        if line == "[[providers]]":
-            if current is not None:
-                providers.append(current)
-            current = {}
-            continue
-        if current is None:
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            continue
-        match = re.match(r"^([A-Za-z0-9_]+)\s*=\s*(.+)$", line)
-        if not match:
-            continue
-        key, value = match.group(1), match.group(2).strip()
-        if value.startswith("[") and "]" not in value:
-            pending_key = key
-            pending_value = [value]
-            continue
-        try:
-            current[key] = ast.literal_eval(value)
-        except Exception:
-            current[key] = value
-
-finish_pending()
-if current is not None:
-    providers.append(current)
-
-claude = next((p for p in providers if p.get("name") == "claude"), None)
-if claude is None:
-    sys.exit("::error:: config has no [[providers]] block with name=\"claude\"")
-
-upstream = claude.get("upstream_url")
-platforms = claude.get("platforms") or []
-files = claude.get("files") or []
-if not upstream:
-    sys.exit("::error:: claude provider has no upstream_url")
-if not platforms:
-    sys.exit("::error:: claude provider has no platforms")
-if not files:
-    sys.exit("::error:: claude provider has no files")
-
-file_by_platform = {}
-for rel in files:
-    parts = rel.replace("\\", "/").split("/")
-    if len(parts) != 2 or not parts[0] or not parts[1]:
-        sys.exit(f"::error:: claude file path must look like <platform>/<file>: {rel}")
-    file_by_platform[parts[0]] = parts[1]
-
-missing = [p for p in platforms if p not in file_by_platform]
-if missing:
-    sys.exit("::error:: claude files missing platform entries: " + ", ".join(missing))
+upstream = sys.argv[1].rstrip("/")
+platforms = [
+    "darwin-x64",
+    "darwin-arm64",
+    "linux-x64",
+    "linux-arm64",
+    "linux-x64-musl",
+    "linux-arm64-musl",
+    "win32-x64",
+    "win32-arm64",
+]
+file_by_platform = {
+    key: "claude.exe" if key.startswith("win32-") else "claude"
+    for key in platforms
+}
 
 print(json.dumps({
-    "upstream_url": upstream.rstrip("/"),
+    "upstream_url": upstream,
     "platforms": platforms,
     "files": file_by_platform,
 }))
