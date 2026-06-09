@@ -31,18 +31,20 @@ die() {
 }
 
 require_value() {
-    [ "$#" -ge 2 ] || die "$1 requires a value"
+    local option="${1:-option}"
+
+    [ "$#" -ge 2 ] || die "$option requires a value"
 }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --mirror|--mirror-url)
-            require_value "$1" "$@"
+            require_value "$@"
             MIRROR_URL="$2"
             shift 2
             ;;
         --install-dir)
-            require_value "$1" "$@"
+            require_value "$@"
             INSTALL_DIR="$2"
             shift 2
             ;;
