@@ -1,0 +1,157 @@
+name: pure-mirror
+
+'on':
+  workflow_dispatch:
+  schedule:
+    - cron: "17,47 * * * *"
+
+concurrency:
+  group: pure-mirror
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure tools
+        run: |
+          set -euo pipefail
+
+          missing=()
+          for cmd in aws jq curl; do
+            if ! command -v "$cmd" >/dev/null 2>&1; then
+              missing+=("$cmd")
+            fi
+          done
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update
+            sudo apt-get install -y awscli jq curl
+          fi
+
+          aws --version
+          jq --version
+          curl --version | head -n 1
+
+      - name: Mirror providers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          R2_S3_ENDPOINT: ${{ secrets.MIRROR_S3_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MIRROR_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MIRROR_S3_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.MIRROR_S3_BUCKET }}
+          SECONDARY_S3_ENDPOINT: ${{ secrets.SECONDARY_S3_ENDPOINT }}
+          SECONDARY_S3_BUCKET: ${{ secrets.SECONDARY_S3_BUCKET }}
+          SECONDARY_S3_ACCESS_KEY_ID: ${{ secrets.SECONDARY_S3_ACCESS_KEY_ID }}
+          SECONDARY_S3_SECRET_ACCESS_KEY: ${{ secrets.SECONDARY_S3_SECRET_ACCESS_KEY }}
+          SECONDARY_S3_REGION: ${{ secrets.SECONDARY_S3_REGION }}
+        run: |
+          set -euo pipefail
+
+          mirror_url="https://install.agentsmirror.com"
+          work_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/pure-mirror.XXXXXX")"
+          cleanup() {
+            rm -rf "$work_root"
+          }
+          trap cleanup EXIT
+
+          build_manifest() {
+            local provider="$1"
+            local manifest="$2"
+
+            case "$provider" in
+              codex)
+                bash scripts/build-codex-manifest.sh "$manifest"
+                ;;
+              claude)
+                bash scripts/build-claude-manifest.sh "$manifest"
+                ;;
+              *)
+                echo "::error:: unknown provider: $provider" >&2
+                exit 2
+                ;;
+            esac
+          }
+
+          download_artifacts() {
+            local provider="$1"
+            local manifest="$2"
+            local artifacts_root="$3"
+
+            case "$provider" in
+              codex)
+                bash scripts/download-codex.sh "$manifest" "$artifacts_root"
+                ;;
+              claude)
+                bash scripts/download-claude.sh "$manifest" "$artifacts_root"
+                ;;
+              *)
+                echo "::error:: unknown provider: $provider" >&2
+                exit 2
+                ;;
+            esac
+          }
+
+          for provider in codex claude; do
+            echo "==> $provider: build manifest"
+            manifest="$work_root/${provider}-latest.json"
+            artifacts_root="$work_root/artifacts-${provider}"
+            mkdir -p "$artifacts_root"
+
+            build_manifest "$provider" "$manifest"
+            built_version="$(jq -er '.version' "$manifest")"
+
+            echo "==> $provider: stale check against live mirror"
+            live_manifest="$work_root/${provider}-live.json"
+            live_version=""
+            if curl -fsSL --retry 3 --retry-delay 2 \
+              -o "$live_manifest" \
+              "$mirror_url/$provider/latest.json"; then
+              live_version="$(jq -r '.version // empty' "$live_manifest")"
+            else
+              echo "::warning:: $provider live latest.json could not be fetched; continuing with sync"
+            fi
+
+            if [ "$live_version" = "$built_version" ]; then
+              echo "$provider up to date ($built_version); skipping"
+              continue
+            fi
+
+            if [ -n "$live_version" ]; then
+              echo "$provider update needed: live=$live_version built=$built_version"
+            else
+              echo "$provider update needed: live version unavailable built=$built_version"
+            fi
+
+            echo "==> $provider: download artifacts"
+            download_artifacts "$provider" "$manifest" "$artifacts_root"
+
+            echo "==> $provider: sync R2"
+            PROVIDERS="$provider" bash scripts/sync-r2.sh "$artifacts_root"
+
+            echo "==> $provider: sync secondary S3"
+            PROVIDERS="$provider" bash scripts/sync-secondary-s3.sh "$artifacts_root"
+
+            echo "==> $provider: prune"
+            PROVIDERS="$provider" bash scripts/prune.sh
+
+            echo "==> $provider: verify live mirror"
+            verified_manifest="$work_root/${provider}-verified.json"
+            curl -fsSL --retry 6 --retry-delay 5 \
+              -o "$verified_manifest" \
+              "$mirror_url/$provider/latest.json?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${provider}"
+            verified_version="$(jq -er '.version' "$verified_manifest")"
+
+            if [ "$verified_version" != "$built_version" ]; then
+              echo "::error:: $provider verification failed: expected $built_version, got $verified_version" >&2
+              exit 1
+            fi
+
+            echo "$provider verified ($verified_version)"
+          done
