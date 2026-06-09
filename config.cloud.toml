@@ -66,6 +66,19 @@ platforms = [
   "win32-x64",
   "win32-arm64"
 ]
+# openai/codex 每个 release 带 ~139 个资产(CLI 的多种打包格式 + 另一个产品
+# codex-app-server-* + npm .tgz + Python .whl + .dmg 等),全镜像约 5.7GB/版。
+# acm-client 每个平台只会选中一个可安装归档(unix 取 .tar.gz,windows 取
+# .exe.zip;Linux 的 gnu 平台经 platform_hints 回退到 musl),所以只镜像这 6 个
+# 即覆盖全部 8 个声明平台,约 0.5GB/版。留空则镜像全部 release assets。
+files = [
+  "codex-x86_64-apple-darwin.tar.gz",
+  "codex-aarch64-apple-darwin.tar.gz",
+  "codex-x86_64-unknown-linux-musl.tar.gz",
+  "codex-aarch64-unknown-linux-musl.tar.gz",
+  "codex-x86_64-pc-windows-msvc.exe.zip",
+  "codex-aarch64-pc-windows-msvc.exe.zip"
+]
 include_prerelease = false
 update_policy = "tracking"
 
