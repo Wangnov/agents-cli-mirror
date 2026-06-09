@@ -138,8 +138,7 @@ Worker secrets：
 - `SECONDARY_S3_BUCKET`
 - `SECONDARY_S3_ACCESS_KEY_ID`
 - `SECONDARY_S3_SECRET_ACCESS_KEY`
-- `SECONDARY_S3_REGION`，可选，未设置时 Worker 默认使用 `auto`
-- `SECONDARY_S3_PREFIX`，可选，用于给二级存储 object key 加统一前缀
+- `SECONDARY_S3_REGION`，可选，未设置时 Worker 默认使用 `us-east-1`
 
 部署后，`install.agentsmirror.com/*` 路由到该 Worker。
 

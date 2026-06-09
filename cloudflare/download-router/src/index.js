@@ -11,7 +11,7 @@ export default {
     }
 
     const objectKey = objectKeyForPath(url.pathname);
-    const secondaryObjectKey = objectKeyWithPrefix(objectKey, env.SECONDARY_S3_PREFIX || "");
+    const secondaryObjectKey = objectKey;
     const country = request.cf?.country || request.headers.get("CF-IPCountry") || "";
     const secondaryCountryCodes = new Set(
       (env.SECONDARY_COUNTRY_CODES || DEFAULT_SECONDARY_COUNTRY_CODES)
@@ -25,7 +25,7 @@ export default {
         endpoint: env.SECONDARY_S3_ENDPOINT,
         bucket: env.SECONDARY_S3_BUCKET,
         key: secondaryObjectKey,
-        region: env.SECONDARY_S3_REGION || "auto",
+        region: env.SECONDARY_S3_REGION || "us-east-1",
         accessKeyId: env.SECONDARY_S3_ACCESS_KEY_ID,
         secretAccessKey: env.SECONDARY_S3_SECRET_ACCESS_KEY,
         expiresInSeconds: ttlSeconds(env.SECONDARY_S3_SIGNED_URL_TTL_SECONDS),
@@ -81,11 +81,6 @@ function withObjectKeyAndSearch(baseUrl, objectKey, search) {
 
 function objectKeyForPath(pathname) {
   return pathname.replace(/^\/+/, "");
-}
-
-function objectKeyWithPrefix(objectKey, prefix) {
-  const cleanPrefix = prefix.replace(/^\/+|\/+$/g, "");
-  return cleanPrefix ? `${cleanPrefix}/${objectKey}` : objectKey;
 }
 
 async function presignS3GetUrl(options) {
