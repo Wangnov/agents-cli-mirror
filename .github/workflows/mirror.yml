@@ -1,0 +1,443 @@
+name: pure-mirror
+
+'on':
+  workflow_dispatch:
+  schedule:
+    - cron: "17,47 * * * *"
+
+concurrency:
+  group: pure-mirror
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure tools
+        run: |
+          set -euo pipefail
+
+          missing=()
+          for cmd in aws jq curl; do
+            if ! command -v "$cmd" >/dev/null 2>&1; then
+              missing+=("$cmd")
+            fi
+          done
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update
+            sudo apt-get install -y awscli jq curl
+          fi
+
+          aws --version
+          jq --version
+          curl --version | head -n 1
+
+      - name: Mirror providers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          R2_S3_ENDPOINT: ${{ secrets.MIRROR_S3_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MIRROR_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MIRROR_S3_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.MIRROR_S3_BUCKET }}
+          SECONDARY_S3_ENDPOINT: ${{ secrets.SECONDARY_S3_ENDPOINT }}
+          SECONDARY_S3_BUCKET: ${{ secrets.SECONDARY_S3_BUCKET }}
+          SECONDARY_S3_ACCESS_KEY_ID: ${{ secrets.SECONDARY_S3_ACCESS_KEY_ID }}
+          SECONDARY_S3_SECRET_ACCESS_KEY: ${{ secrets.SECONDARY_S3_SECRET_ACCESS_KEY }}
+          SECONDARY_S3_REGION: ${{ secrets.SECONDARY_S3_REGION }}
+        run: |
+          set -euo pipefail
+
+          mirror_url="https://install.agentsmirror.com"
+          work_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/pure-mirror.XXXXXX")"
+          cleanup() {
+            rm -rf "$work_root"
+          }
+          trap cleanup EXIT
+
+          s3_head_config="$work_root/s3-head.conf"
+          cat > "$s3_head_config" <<'EOF'
+          [default]
+          s3 =
+              addressing_style = path
+          EOF
+
+          build_manifest() {
+            local provider="$1"
+            local manifest="$2"
+
+            case "$provider" in
+              codex)
+                bash scripts/build-codex-manifest.sh "$manifest"
+                ;;
+              claude)
+                bash scripts/build-claude-manifest.sh "$manifest"
+                ;;
+              *)
+                echo "::error:: unknown provider: $provider" >&2
+                exit 2
+                ;;
+            esac
+          }
+
+          download_artifacts() {
+            local provider="$1"
+            local manifest="$2"
+            local artifacts_root="$3"
+
+            case "$provider" in
+              codex)
+                bash scripts/download-codex.sh "$manifest" "$artifacts_root"
+                ;;
+              claude)
+                bash scripts/download-claude.sh "$manifest" "$artifacts_root"
+                ;;
+              *)
+                echo "::error:: unknown provider: $provider" >&2
+                exit 2
+                ;;
+            esac
+          }
+
+          stage_latest_manifest() {
+            local provider="$1"
+            local manifest="$2"
+            local artifacts_root="$3"
+
+            mkdir -p "$artifacts_root/$provider"
+            cp "$manifest" "$artifacts_root/$provider/latest.json"
+          }
+
+          verify_live_latest() {
+            local provider="$1"
+            local built_manifest="$2"
+            local verified_manifest="$3"
+            local expected_version
+            local verified_version
+            local live_entries="$work_root/${provider}-verified-platforms.json"
+            local built_entries="$work_root/${provider}-expected-platforms.json"
+
+            curl -fsSL --retry 6 --retry-delay 5 \
+              -o "$verified_manifest" \
+              "$mirror_url/$provider/latest.json?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${provider}"
+            expected_version="$(jq -er '.version' "$built_manifest")"
+            verified_version="$(jq -er '.version' "$verified_manifest")"
+
+            if [ "$verified_version" != "$expected_version" ]; then
+              echo "::error:: $provider verification failed: expected $expected_version, got $verified_version" >&2
+              exit 1
+            fi
+
+            if ! manifest_platform_entries "$verified_manifest" "$live_entries"; then
+              echo "::error:: $provider verification failed: live latest.json platform entries are invalid" >&2
+              exit 1
+            fi
+            if ! manifest_platform_entries "$built_manifest" "$built_entries"; then
+              echo "::error:: $provider verification failed: built manifest platform entries are invalid" >&2
+              exit 1
+            fi
+            if ! cmp -s "$live_entries" "$built_entries"; then
+              echo "::error:: $provider verification failed: live latest.json platform files differ from built manifest" >&2
+              diff -u "$built_entries" "$live_entries" >&2 || true
+              exit 1
+            fi
+
+            echo "$provider verified latest.json ($verified_version)"
+          }
+
+          verify_live_install_scripts() {
+            local provider="$1"
+            local ext
+
+            for ext in sh ps1; do
+              curl -fsSL --retry 6 --retry-delay 5 \
+                -o /dev/null \
+                "$mirror_url/$provider/install.$ext?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${provider}-${ext}"
+              echo "$provider verified install.$ext"
+            done
+          }
+
+          manifest_object_keys() {
+            local provider="$1"
+            local manifest="$2"
+            local keys_file="$3"
+
+            jq -er --arg provider "$provider" '
+              def invalid($msg): error($msg);
+              .version as $version
+              | if (($version | type) != "string" or $version == "" or ($version | contains("/"))) then
+                  invalid("invalid manifest version")
+                elif ((.platforms | type) != "object" or (.platforms | length) == 0) then
+                  invalid("invalid manifest platforms")
+                else
+                  [
+                    ($provider + "/latest.json"),
+                    ($provider + "/install.sh"),
+                    ($provider + "/install.ps1")
+                  ] + (
+                    .platforms
+                    | to_entries
+                    | map(
+                        if ((.key | type) != "string" or .key == "" or (.key | contains("/"))) then
+                          invalid("invalid manifest platform key")
+                        elif ((.value | type) != "object") then
+                          invalid("invalid manifest platform entry")
+                        elif ((.value.file | type) != "string" or .value.file == "" or (.value.file | contains("/"))) then
+                          invalid("invalid manifest artifact file")
+                        else
+                          ($provider + "/" + $version + "/" + .key + "/" + .value.file)
+                        end
+                      )
+                  )
+                  | .[]
+                end
+            ' "$manifest" > "$keys_file"
+          }
+
+          manifest_platform_entries() {
+            local manifest="$1"
+            local entries_file="$2"
+
+            jq -S -c '
+              def invalid($msg): error($msg);
+              if ((.platforms | type) != "object" or (.platforms | length) == 0) then
+                invalid("invalid manifest platforms")
+              else
+                .platforms
+                | to_entries
+                | sort_by(.key)
+                | map(
+                    if ((.key | type) != "string" or .key == "") then
+                      invalid("invalid manifest platform key")
+                    elif ((.value | type) != "object") then
+                      invalid("invalid manifest platform entry")
+                    elif ((.value.file | type) != "string" or .value.file == "") then
+                      invalid("invalid manifest artifact file")
+                    elif ((.value.sha256 | type) != "string" or .value.sha256 == "") then
+                      invalid("invalid manifest artifact sha256")
+                    elif ((.value.size | type) != "number") then
+                      invalid("invalid manifest artifact size")
+                    else
+                      {
+                        platform: .key,
+                        file: .value.file,
+                        sha256: .value.sha256,
+                        size: .value.size
+                      }
+                    end
+                  )
+              end
+            ' "$manifest" > "$entries_file"
+          }
+
+          manifest_platform_entries_match() {
+            local provider="$1"
+            local live_manifest="$2"
+            local built_manifest="$3"
+            local live_entries="$work_root/${provider}-live-platforms.json"
+            local built_entries="$work_root/${provider}-built-platforms.json"
+
+            if ! manifest_platform_entries "$live_manifest" "$live_entries"; then
+              echo "::warning:: $provider live manifest platform entries could not be compared"
+              return 1
+            fi
+            if ! manifest_platform_entries "$built_manifest" "$built_entries"; then
+              echo "::error:: $provider built manifest platform entries could not be compared" >&2
+              exit 1
+            fi
+
+            cmp -s "$live_entries" "$built_entries"
+          }
+
+          backend_objects_present() {
+            local backend_name="$1"
+            local endpoint="$2"
+            local bucket="$3"
+            local region="$4"
+            local access_key="$5"
+            local secret_key="$6"
+            local keys_file="$7"
+            local missing=0
+            local key
+
+            if [ -z "$endpoint" ] || [ -z "$bucket" ] || [ -z "$access_key" ] || [ -z "$secret_key" ]; then
+              echo "::warning:: $backend_name completeness check is missing S3 configuration"
+              return 1
+            fi
+
+            while IFS= read -r key; do
+              [ -n "$key" ] || continue
+              if ! AWS_ACCESS_KEY_ID="$access_key" \
+                AWS_SECRET_ACCESS_KEY="$secret_key" \
+                AWS_DEFAULT_REGION="$region" \
+                AWS_EC2_METADATA_DISABLED=true \
+                AWS_CONFIG_FILE="$s3_head_config" \
+                aws s3api head-object \
+                  --endpoint-url "$endpoint" \
+                  --region "$region" \
+                  --bucket "$bucket" \
+                  --key "$key" \
+                  >/dev/null 2>&1; then
+                echo "::warning:: $backend_name missing s3://$bucket/$key"
+                missing=1
+              fi
+            done < "$keys_file"
+
+            return "$missing"
+          }
+
+          secondary_s3_enabled() {
+            [ -n "${SECONDARY_S3_ENDPOINT:-}" ] &&
+              [ -n "${SECONDARY_S3_BUCKET:-}" ] &&
+              [ -n "${SECONDARY_S3_ACCESS_KEY_ID:-}" ] &&
+              [ -n "${SECONDARY_S3_SECRET_ACCESS_KEY:-}" ]
+          }
+
+          enabled_backends_have_objects() {
+            local provider="$1"
+            local manifest="$2"
+            local keys_file="$work_root/${provider}-object-keys.txt"
+            local object_count
+            local all_present=0
+
+            manifest_object_keys "$provider" "$manifest" "$keys_file"
+            object_count="$(awk 'END { print NR }' "$keys_file")"
+            echo "$provider unchanged version: checking $object_count expected objects on enabled backends"
+
+            if ! backend_objects_present \
+              "R2" \
+              "$R2_S3_ENDPOINT" \
+              "${R2_BUCKET:-agentclimirror}" \
+              "${AWS_DEFAULT_REGION:-auto}" \
+              "${AWS_ACCESS_KEY_ID:-}" \
+              "${AWS_SECRET_ACCESS_KEY:-}" \
+              "$keys_file"; then
+              all_present=1
+            fi
+
+            if secondary_s3_enabled; then
+              if ! backend_objects_present \
+                "secondary S3" \
+                "$SECONDARY_S3_ENDPOINT" \
+                "$SECONDARY_S3_BUCKET" \
+                "${SECONDARY_S3_REGION:-us-east-1}" \
+                "$SECONDARY_S3_ACCESS_KEY_ID" \
+                "$SECONDARY_S3_SECRET_ACCESS_KEY" \
+                "$keys_file"; then
+                all_present=1
+              fi
+            else
+              echo "secondary S3 is not configured; skipping secondary completeness check"
+            fi
+
+            return "$all_present"
+          }
+
+          for provider in codex claude; do
+            echo "==> $provider: build manifest"
+            manifest="$work_root/${provider}-latest.json"
+            artifacts_root="$work_root/artifacts-${provider}"
+            mkdir -p "$artifacts_root"
+
+            build_manifest "$provider" "$manifest"
+            built_version="$(jq -er '.version' "$manifest")"
+
+            echo "==> $provider: stale check against live mirror"
+            live_manifest="$work_root/${provider}-live.json"
+            live_version=""
+            live_platform_entries_match=0
+            if live_status="$(curl -sSL --retry 3 --retry-delay 2 \
+              -o "$live_manifest" \
+              -w '%{http_code}' \
+              "$mirror_url/$provider/latest.json")"; then
+              case "$live_status" in
+                200)
+                  if ! live_version="$(jq -er '.version // empty' "$live_manifest" 2>/dev/null)"; then
+                    echo "::warning:: $provider live latest.json is missing a version or is not valid JSON; continuing with sync"
+                    live_version=""
+                  fi
+                  ;;
+                404|410)
+                  echo "::warning:: $provider live latest.json is missing (HTTP $live_status); continuing with sync"
+                  ;;
+                401|403)
+                  echo "::error:: $provider live latest.json access failed (HTTP $live_status)" >&2
+                  exit 1
+                  ;;
+                *)
+                  echo "::error:: $provider live latest.json fetch returned HTTP $live_status" >&2
+                  exit 1
+                  ;;
+              esac
+            else
+              curl_status="$?"
+              echo "::error:: $provider live latest.json could not be fetched (curl exit $curl_status)" >&2
+              exit 1
+            fi
+
+            if [ "$live_version" = "$built_version" ]; then
+              echo "$provider live version matches built version ($built_version); comparing platform files"
+              if manifest_platform_entries_match "$provider" "$live_manifest" "$manifest"; then
+                live_platform_entries_match=1
+              fi
+            fi
+
+            if [ "$live_version" = "$built_version" ] && [ "$live_platform_entries_match" -eq 1 ]; then
+              echo "$provider up to date ($built_version); checking enabled backend completeness"
+              if enabled_backends_have_objects "$provider" "$manifest"; then
+                echo "$provider enabled backends already have all current objects; syncing latest manifest and installers"
+                stage_latest_manifest "$provider" "$manifest" "$artifacts_root"
+
+                echo "==> $provider: sync R2 latest manifest and installers"
+                PROVIDERS="$provider" bash scripts/sync-r2.sh "$artifacts_root"
+
+                echo "==> $provider: sync secondary S3 latest manifest and installers"
+                PROVIDERS="$provider" bash scripts/sync-secondary-s3.sh "$artifacts_root"
+
+                echo "==> $provider: prune"
+                PROVIDERS="$provider" bash scripts/prune.sh
+
+                echo "==> $provider: verify live mirror objects"
+                verified_manifest="$work_root/${provider}-verified.json"
+                verify_live_latest "$provider" "$manifest" "$verified_manifest"
+                verify_live_install_scripts "$provider"
+                continue
+              fi
+
+              echo "$provider unchanged version ($built_version) is missing objects on an enabled backend; running full download and sync"
+            elif [ "$live_version" = "$built_version" ]; then
+              echo "$provider unchanged version ($built_version) has changed platform files; running full download and sync"
+            fi
+
+            if [ "$live_version" = "$built_version" ] && [ "$live_platform_entries_match" -eq 1 ]; then
+              echo "$provider backfill needed for current version $built_version"
+            elif [ "$live_version" = "$built_version" ]; then
+              echo "$provider republish needed for current version $built_version"
+            elif [ -n "$live_version" ]; then
+              echo "$provider update needed: live=$live_version built=$built_version"
+            else
+              echo "$provider update needed: live version unavailable built=$built_version"
+            fi
+
+            echo "==> $provider: download artifacts"
+            download_artifacts "$provider" "$manifest" "$artifacts_root"
+
+            echo "==> $provider: sync R2"
+            PROVIDERS="$provider" bash scripts/sync-r2.sh "$artifacts_root"
+
+            echo "==> $provider: sync secondary S3"
+            PROVIDERS="$provider" bash scripts/sync-secondary-s3.sh "$artifacts_root"
+
+            echo "==> $provider: prune"
+            PROVIDERS="$provider" bash scripts/prune.sh
+
+            echo "==> $provider: verify live mirror"
+            verified_manifest="$work_root/${provider}-verified.json"
+            verify_live_latest "$provider" "$manifest" "$verified_manifest"
+          done

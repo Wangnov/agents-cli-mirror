@@ -1,0 +1,23 @@
+{
+  "name": "agents-cli-mirror-download-router",
+  "main": "src/index.js",
+  "compatibility_date": "2026-06-09",
+  "workers_dev": false,
+  // Required secrets, set with `wrangler secret put` and not in `vars`:
+  // - SECONDARY_S3_ENDPOINT=https://fgws3-ocloud.ihep.ac.cn
+  // - SECONDARY_S3_BUCKET=20830-agent-cli-mirror
+  // - SECONDARY_S3_REGION=us-east-1 (optional; default)
+  // - SECONDARY_S3_ACCESS_KEY_ID
+  // - SECONDARY_S3_SECRET_ACCESS_KEY
+  "vars": {
+    "GLOBAL_MIRROR_BASE_URL": "https://r2.wangnov-ai.com",
+    "SECONDARY_COUNTRY_CODES": "CN",
+    "SECONDARY_S3_SIGNED_URL_TTL_SECONDS": "3600"
+  },
+  "routes": [
+    {
+      "pattern": "install.agentsmirror.com/*",
+      "zone_id": "a5bae9b722f3c5fe1a24aaebe7a8e663"
+    }
+  ]
+}

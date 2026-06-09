@@ -4,3 +4,6 @@
 *.log
 .env
 config.toml
+.wrangler/
+artifacts/
+node_modules/

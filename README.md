@@ -1,327 +1,154 @@
 # Agents CLI Mirror
 
-`Agents CLI Mirror` 是一个以配置驱动为核心的制品镜像与分发系统。
+Agents CLI Mirror 是 Claude Code 和 Codex CLI 的纯静态镜像。仓库里不再运行自建后端服务，镜像产物由 GitHub Actions 定时生成并上传到对象存储，用户安装时通过 Cloudflare Worker 路由到最快的下载源。
 
-它包含三个可发布二进制（两类产品角色）：
+当前镜像的 provider 只有：
 
-- `acm-server`：镜像服务端（拉取上游、缓存、分发、脚本入口）
-- `acm-client`：本地客户端（命令 `acm`，建议通过包管理器安装）
-- `acm-installer`：引导安装器（由脚本入口临时下载并执行，不作为日常主命令）
-
-支持的存储后端只有两种：
-
-- `local`（本地文件缓存）
-- `s3`（任意 S3 兼容对象存储）
-
-## 核心能力
-
-- 动态 Provider：通过 `[[providers]]` 注册，不写死工具名
-- 上游类型：`github_release` / `gcs_release` / `static`
-- 统一下载路径：`/{provider}/{version}/files/{*filepath}`
-- 统一脚本入口：
-  - `/install/{provider}`
-  - `/{provider}/install.sh`
-  - `/update/{provider}`
-  - `/uninstall/{provider}`
-  - `/status`
-  - `/doctor`
-- 脚本协商策略：`Accept` 优先，`User-Agent` 兜底（自动返回 `sh` 或 `ps1`）
-
-## 角色化使用指南
-
-### 1) 作为镜像分发服务运营者
-
-#### 第一步：准备配置
-
-```toml
-[server]
-host = "0.0.0.0"
-port = 1357
-public_url = "https://mirror.example.com"
-installer_provider = "installer"
-
-[cache]
-dir = "./cache"
-max_versions = 1
-
-[storage]
-mode = "local"
-
-[update]
-enabled = true
-interval_minutes = 10
-
-[[providers]]
-name = "codex"
-source = "github_release"
-repo = "openai/codex"
-tags = ["latest"]
-update_policy = "tracking"
-
-[providers.ui]
-preset = "codex"
-
-[[providers]]
-name = "installer"
-source = "github_release"
-repo = "wangnov/agents-cli-mirror"
-tags = ["latest"]
-update_policy = "tracking"
-
-[providers.ui]
-preset = "acm"
-```
-
-#### 第二步：启动服务
-
-```bash
-cargo run --release --bin acm-server -- serve --config config.toml
-```
-
-#### 第三步：验证接口
-
-```bash
-curl -fsSL http://127.0.0.1:1357/health
-curl -fsSL http://127.0.0.1:1357/codex/latest
-curl -fsSL http://127.0.0.1:1357/api/codex/info
-curl -fsSL http://127.0.0.1:1357/api/codex/checksums
-```
-
-#### 第四步：对外分发脚本
-
-```bash
-# Unix shell
-curl -fsSL https://mirror.example.com/install/codex | bash
-curl -fsSL https://mirror.example.com/codex/install.sh | bash
-curl -fsSL https://mirror.example.com/claude/install.sh | bash
-curl -fsSL https://mirror.example.com/gemini/install.sh | bash
-
-# PowerShell
-irm https://mirror.example.com/install/codex | iex
-irm https://mirror.example.com/install/claude | iex
-irm https://mirror.example.com/install/gemini | iex
-```
-
-说明：上述脚本入口会先下载 `acm-installer`，再由它执行 `install/update/uninstall/status/doctor` 命令。
-
-### 1.1) 纯云模式（GitHub Actions + R2 自定义域名，无 VPS）
-
-目标：对外提供同一域名下的静态接口：
-
-- `/{provider}/{tag}`（tag -> version）
-- `/api/{provider}/info`、`/api/{provider}/versions`、`/api/{provider}/checksums`
-- `/{provider}/install.sh`（脚本安装入口）
-- `/{provider}/{version}/files/{*filepath}`（大文件必须 R2 直出，不经 Worker/VPS 代理）
-
-核心点：制品对象在存储里的 key 形如 `/{provider}/versions/{version}/files/...`，但客户端对外下载路径是 `/{provider}/{version}/files/...`，因此需要在 Cloudflare 边缘做一次 URL Rewrite。
-
-当前内置的公开 provider 名称是：
-
-- `claude`
 - `codex`
-- `gemini`
-- `installer`
+- `claude`
 
-注意：Claude 的规范 provider 名是 `claude`。
+## 快速安装
 
-#### A) Cloudflare / R2 侧配置
-
-1) 绑定 R2 Bucket 的自定义域名（例如 `https://mirror.example.com`），确保该域名直接指向 R2（不走任何 Worker 代理）。
-
-2) 配置 Transform Rules / URL Rewrite（示例规则）：
-
-- 匹配：`^/([^/]+)/([^/]+)/files/(.*)$`
-- 重写为：`/$1/versions/$2/files/$3`
-
-#### B) GitHub Actions 自动同步与发布
-
-仓库已内置工作流：`.github/workflows/mirror-cloud-sync.yml`（定时 + 手动触发）。
-
-你需要在仓库 Secrets 里配置（名称与代码一致）：
-
-- `MIRROR_PUBLIC_URL`：对外域名（例如 `https://mirror.example.com`）
-- `MIRROR_S3_ENDPOINT` / `MIRROR_S3_BUCKET`
-- `MIRROR_S3_ACCESS_KEY_ID` / `MIRROR_S3_SECRET_ACCESS_KEY`
-- 可选：`MIRROR_S3_REGION`（R2 通常用 `auto`）、`MIRROR_S3_PREFIX`
-
-该工作流会执行两步：
-
-- `acm-server sync`：拉取上游并上传制品到 R2
-- `acm-server publish`：把 `/{provider}/{tag}`、`/api/{provider}/*`、`/{provider}/install.sh` 等“动态接口”发布成 R2 静态对象
-
-本地手动跑（示例）：
+Unix shell：
 
 ```bash
-cargo run --release --bin acm-server -- sync --config config.cloud.toml --provider all
-cargo run --release --bin acm-server -- publish --config config.cloud.toml --provider all
+curl -fsSL https://install.agentsmirror.com/codex/install.sh | bash
+curl -fsSL https://install.agentsmirror.com/claude/install.sh | bash
 ```
 
-#### C) refresh（可选：用 Worker 触发 workflow_dispatch）
+Windows PowerShell：
 
-如果你希望保留 `POST /api/{provider}/refresh` 这个入口（不自建 VPS），可以部署 `workers/refresh-dispatch`，并且只把路由绑定到 `/api/*/refresh`。
+```powershell
+irm https://install.agentsmirror.com/codex/install.ps1 | iex
+irm https://install.agentsmirror.com/claude/install.ps1 | iex
+```
 
-### 2) 作为个人用户（两种方式）
-
-#### 方式 A：不自建镜像，只使用 `acm-client`
-
-`acm-client`（二进制 `acm`）负责本机安装/更新/卸载。该模式通常通过包管理器安装 `acm-client`（如 crates.io/Homebrew/npm 包装）。
-
-构建形态：
-
-- `acm`（lite，默认）：不包含 `s3` 支持
-- `acm-full`（二进制名 `acm-full`，开启 `s3` feature）：用于需要 `storage.mode = "s3"` 的场景
-
-本地构建示例：
+安装脚本支持这些常用参数：
 
 ```bash
-# lite
-cargo build -p acm --release
-
-# full (s3, outputs `target/release/acm-full`)
-cargo build -p acm-full --release
+curl -fsSL https://install.agentsmirror.com/claude/install.sh | bash -s -- --install-dir ~/.local/bin
 ```
 
-可用三种来源策略（按优先级）：
-
-- 显式镜像：`--mirror-url <url>`
-- 环境变量镜像：`MIRROR_URL=<url>`
-- 配置默认镜像：`[client].default_mirror_url = "https://..."`
-- 配置驱动直连上游：当以上镜像都未配置时，按 `config.toml` 的 `providers` 配置直接同步上游并安装（需要本地可访问上游）
-
-如果你在 lite 构建下使用了 `storage.mode = "s3"`，命令会提示“当前构建未启用 s3 feature”。
-
-发布资产命名：
-
-- `acm-<target>.*`：lite
-- `acm-full-<target>.*`：full（含 s3）
-- `acm-server-<target>.*`
-- `acm-installer-<target>.*`
-
-```bash
-# 直接指定镜像地址
-acm --mirror-url https://mirror.example.com install codex
-acm --mirror-url https://mirror.example.com update codex
-acm --mirror-url https://mirror.example.com uninstall codex
-
-# 不指定 mirror，直接按 config.toml 从上游同步后安装
-acm --config config.toml install codex
+```powershell
+irm https://install.agentsmirror.com/codex/install.ps1 | iex
+# 或先下载脚本后传入：
+# .\codex.ps1 --install-dir "$env:LOCALAPPDATA\Programs\codex"
 ```
 
-#### 方式 B：本机自部署（`acm-server` + `acm-client`）
+## 架构
 
-`acm-server` 负责拉取上游并提供镜像，`acm-client` 负责在本机安装和管理工具。
+`.github/workflows/mirror.yml` 是唯一的镜像工作流，支持手动触发，并按 `17,47 * * * *` 定时运行。每次运行会按 provider 独立处理：
 
-```bash
-# 1) 先启动本机镜像服务
-cargo run --release --bin acm-server -- serve --config config.toml
+1. 生成 manifest：
+   - `codex` 从 GitHub Releases `openai/codex` 读取最新 release，只镜像 6 个可安装 CLI 归档。
+   - `claude` 从 Claude Code GCS release bucket 读取 `/latest` 文本指针，再读取 `<version>/manifest.json` 里的 checksum 和 size。
+2. 下载产物并校验 SHA256。
+3. 上传到 Cloudflare R2。
+4. 上传到 IHEP 二级 S3；如果二级 S3 环境变量未完整配置，脚本会跳过这一步。
+5. prune，只保留每个 provider 当前 `latest.json` 指向的版本、安装脚本和 `latest.json`。
+6. 从 `https://install.agentsmirror.com/<provider>/latest.json` 拉取并校验线上版本。
 
-# 2) 再用本机客户端操作（指向本机 mirror）
-acm --mirror-url http://127.0.0.1:1357 install codex
-acm --mirror-url http://127.0.0.1:1357 update codex
-acm --mirror-url http://127.0.0.1:1357 uninstall codex
+下载入口由 `cloudflare/download-router/` 里的 Worker 提供。它只服务 `/codex/` 和 `/claude/` 路径：
+
+- 默认把请求 302 到 `GLOBAL_MIRROR_BASE_URL` 指向的 R2 公网域名。
+- 当 Cloudflare 识别到访问国家在 `SECONDARY_COUNTRY_CODES` 中，且二级 S3 凭据完整时，Worker 会生成 IHEP 预签名 URL 并 302 到该地址。
+- 默认中国大陆流量匹配 `CN`，预签名 URL 默认有效期是 3600 秒。
+
+## 对象布局
+
+所有对象都按同一套静态 key 发布：
+
+```text
+<provider>/latest.json
+<provider>/<version>/<key>/<file>
+<provider>/install.sh
+<provider>/install.ps1
 ```
-
-状态与诊断：
-
-```bash
-acm status
-acm status --provider codex
-acm doctor
-```
-
-自动更新控制：
-
-```bash
-acm auto-update enable codex
-acm auto-update disable codex
-acm auto-update status
-acm auto-update run
-```
-
-## 配置说明
-
-### `[server]`
-
-- `host` / `port`：监听地址
-- `public_url`：脚本生成使用的外部地址；未配置时脚本接口返回 `503`
-- `installer_provider`：脚本入口下载 `acm-installer` 时使用的 provider 名称（默认 `installer`）
-- `refresh_token`：`POST /api/{provider}/refresh` 的 Bearer Token
-- `refresh_min_interval_seconds`：refresh 节流窗口
-
-### `[client]`
-
-- `default_mirror_url`：`acm` / `acm-installer` 的默认镜像地址（仅当未传 `--mirror-url` 且未设置 `MIRROR_URL` 时生效）
-
-### `[storage]`
-
-- `mode = "local"`：文件落本地缓存目录
-- `mode = "s3"`：下载后上传到 S3 兼容存储并通过预签名 URL 分发
-
-### `[[providers]]`
-
-- `name`：provider 唯一名（小写字母/数字/`-`/`_`/`.`）
-- `source`：`github_release` / `gcs_release` / `static`
-- `tags`：标签列表（如 `latest` / `stable` / `v1.2.3`）
-- `update_policy`：`tracking` / `pinned` / `manual`
-- `repo`：`github_release` 必填
-- `upstream_url`：`gcs_release` 必填
-- `static_version`：`static` 必填
-- `files`：
-  - `github_release` 可留空（镜像全部 release assets）
-  - `gcs_release` / `static` 必填
-
-### `[providers.ui]`
-
-- `preset`：installer 终端 UI 主题，支持 `acm` / `codex` / `claude` / `gemini`
-- 默认值：`acm`
-- 生效范围：`acm install`、`acm update`、`acm uninstall`
-- 完成态规则：安装完成/更新完成/卸载完成不会强制切成绿色，会保持该 provider 的主题色
 
 示例：
 
-```toml
-[[providers]]
-name = "claude"
-source = "gcs_release"
-upstream_url = "https://storage.googleapis.com/your-bucket/releases"
-tags = ["latest"]
-update_policy = "tracking"
-files = ["linux-x64/claude", "darwin-arm64/claude", "win32-arm64/claude.exe"]
-
-[providers.ui]
-preset = "claude"
+```text
+codex/latest.json
+codex/<version>/x86_64-apple-darwin/codex-x86_64-apple-darwin.tar.gz
+claude/latest.json
+claude/<version>/darwin-arm64/claude
+claude/install.sh
 ```
 
-## HTTP API
+manifest 结构为：
 
-| Method | Path | 说明 |
-|---|---|---|
-| GET | `/health` | 健康检查 |
-| GET | `/{provider}/{tag}` | 查询 tag -> version |
-| GET | `/{provider}/{version}/files/{*filepath}` | 下载制品 |
-| GET | `/api/{provider}/info` | Provider 信息/同步状态 |
-| GET | `/api/{provider}/versions` | 已缓存版本 |
-| GET | `/api/{provider}/checksums` | 校验信息 |
-| POST | `/api/{provider}/refresh` | 手动同步 |
-| GET | `/install/{provider}` | 安装脚本入口（自动协商 sh/ps1） |
-| GET | `/update/{provider}` | 更新脚本入口 |
-| GET | `/uninstall/{provider}` | 卸载脚本入口 |
-| GET | `/status` | 状态脚本入口 |
-| GET | `/doctor` | 诊断脚本入口 |
+```json
+{
+  "provider": "claude",
+  "version": "1.0.0",
+  "published_at": "2026-06-09T00:00:00Z",
+  "platforms": {
+    "darwin-arm64": {
+      "file": "claude",
+      "sha256": "...",
+      "size": 123,
+      "bin": "claude"
+    }
+  }
+}
+```
 
-## 开发命令
+## 关键脚本
+
+- `scripts/build-codex-manifest.sh`：从 `openai/codex` release API 生成 `codex/latest.json`。
+- `scripts/download-codex.sh`：下载 Codex release 资产并校验 manifest 里的 SHA256。
+- `scripts/build-claude-manifest.sh`：从 Claude Code GCS `/latest` 和 upstream manifest 生成 `claude/latest.json`；8 个 Claude 平台内置在脚本中。
+- `scripts/download-claude.sh`：从 Claude Code GCS 下载 manifest 中的二进制并校验 SHA256。
+- `scripts/sync-r2.sh`：上传 artifact tree 和 `install/` 脚本到 R2。
+- `scripts/sync-secondary-s3.sh`：上传同一份 artifact tree 和 `install/` 脚本到 IHEP 二级 S3。
+- `scripts/prune.sh`：以 R2 的 `latest.json` 为准，清理 R2 和已配置的二级 S3 旧版本。
+
+## GitHub Secrets
+
+完整生产同步需要配置这些 repository secrets：
+
+R2：
+
+- `MIRROR_S3_ENDPOINT`
+- `MIRROR_S3_ACCESS_KEY_ID`
+- `MIRROR_S3_SECRET_ACCESS_KEY`
+- `MIRROR_S3_BUCKET`，未配置时脚本默认使用 `agentclimirror`
+
+IHEP 二级 S3：
+
+- `SECONDARY_S3_ENDPOINT`
+- `SECONDARY_S3_BUCKET`
+- `SECONDARY_S3_ACCESS_KEY_ID`
+- `SECONDARY_S3_SECRET_ACCESS_KEY`
+- `SECONDARY_S3_REGION`，未配置时脚本默认使用 `us-east-1`
+
+`sync-secondary-s3.sh` 在二级 S3 必填项缺失时会输出 warning 并跳过上传；`prune.sh` 只有在二级 S3 配置完整时才清理二级存储。
+
+## Worker 配置
+
+`cloudflare/download-router/wrangler.jsonc` 中的默认 vars：
+
+- `GLOBAL_MIRROR_BASE_URL=https://r2.wangnov-ai.com`
+- `SECONDARY_COUNTRY_CODES=CN`
+- `SECONDARY_S3_SIGNED_URL_TTL_SECONDS=3600`
+
+Worker secrets：
+
+- `SECONDARY_S3_ENDPOINT`
+- `SECONDARY_S3_BUCKET`
+- `SECONDARY_S3_ACCESS_KEY_ID`
+- `SECONDARY_S3_SECRET_ACCESS_KEY`
+- `SECONDARY_S3_REGION`，可选，未设置时 Worker 默认使用 `us-east-1`
+
+部署后，`install.agentsmirror.com/*` 路由到该 Worker。
+
+## 本地验证
 
 ```bash
-cargo fmt
-cargo clippy --workspace -- -D warnings
-cargo test --workspace
+rm -f /tmp/verify-claude.json
+bash scripts/build-claude-manifest.sh /tmp/verify-claude.json
+python3 -m json.tool /tmp/verify-claude.json >/dev/null
+bash -n scripts/*.sh
 ```
 
-## 当前约束
-
-- `server.public_url` 是脚本分发的前置条件
-- PowerShell 路径下，installer 目前要求 `.zip` 或 `.exe` 资产格式
-
-## License
-
-AGPL-3.0
+同步相关脚本需要 AWS CLI 和对应 S3 凭据。普通 manifest 生成和下载脚本只需要 `bash`、`curl`、`python3`，以及 `sha256sum` 或 `shasum`。
