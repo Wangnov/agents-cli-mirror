@@ -5,7 +5,6 @@ PROVIDER="claude"
 DEFAULT_MIRROR_URL="https://install.agentsmirror.com"
 MIRROR_URL="${MIRROR_URL:-$DEFAULT_MIRROR_URL}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-VERSION_PIN=""
 
 MANIFEST_PROVIDER=""
 MANIFEST_VERSION=""
@@ -17,7 +16,6 @@ usage() {
     cat <<'EOF'
 Usage: claude.sh [options]
   --mirror <url>       mirror base URL (default: https://install.agentsmirror.com)
-  --version <tag>      install a pinned version manifest instead of latest
   --install-dir <dir>  install directory (default: ~/.local/bin)
   -h, --help           show this help
 
@@ -41,11 +39,6 @@ while [ "$#" -gt 0 ]; do
         --mirror|--mirror-url)
             require_value "$1" "$@"
             MIRROR_URL="$2"
-            shift 2
-            ;;
-        --version)
-            require_value "$1" "$@"
-            VERSION_PIN="$2"
             shift 2
             ;;
         --install-dir)
@@ -97,7 +90,13 @@ detect_platform() {
                         echo "linux-x64"
                     fi
                     ;;
-                arm64|aarch64) echo "linux-arm64" ;;
+                arm64|aarch64)
+                    if is_musl_linux; then
+                        echo "linux-arm64-musl"
+                    else
+                        echo "linux-arm64"
+                    fi
+                    ;;
                 *) die "Unsupported Linux architecture: $arch" ;;
             esac
             ;;
@@ -243,8 +242,7 @@ path_contains_dir() {
 }
 
 PLATFORM_KEY="$(detect_platform)"
-MANIFEST_NAME="${VERSION_PIN:-latest}"
-MANIFEST_URL="$MIRROR_URL/$PROVIDER/$MANIFEST_NAME.json"
+MANIFEST_URL="$MIRROR_URL/$PROVIDER/latest.json"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agents-${PROVIDER}.XXXXXX")"
 
 cleanup() {

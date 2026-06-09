@@ -26,14 +26,13 @@ irm https://install.agentsmirror.com/claude/install.ps1 | iex
 安装脚本支持这些常用参数：
 
 ```bash
-curl -fsSL https://install.agentsmirror.com/codex/install.sh | bash -s -- --version <version>
 curl -fsSL https://install.agentsmirror.com/claude/install.sh | bash -s -- --install-dir ~/.local/bin
 ```
 
 ```powershell
 irm https://install.agentsmirror.com/codex/install.ps1 | iex
 # 或先下载脚本后传入：
-# .\codex.ps1 --version <version> --install-dir "$env:LOCALAPPDATA\Programs\codex"
+# .\codex.ps1 --install-dir "$env:LOCALAPPDATA\Programs\codex"
 ```
 
 ## 架构

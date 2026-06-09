@@ -12,7 +12,6 @@ $MirrorUrl = if ($env:MIRROR_URL) { $env:MIRROR_URL } else { $DefaultMirrorUrl }
 $UserHome = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($HOME) { $HOME } else { [System.IO.Path]::GetTempPath() }
 $LocalAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $UserHome "AppData\Local" }
 $InstallDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { Join-Path $LocalAppData "Programs\claude" }
-$VersionPin = ""
 
 function Fail {
     param([string]$Message)
@@ -24,7 +23,6 @@ function Usage {
     @"
 Usage: claude.ps1 [options]
   --mirror <url>       mirror base URL (default: https://install.agentsmirror.com)
-  --version <tag>      install a pinned version manifest instead of latest
   --install-dir <dir>  install directory (default: %LOCALAPPDATA%\Programs\claude)
   -h, --help           show this help
 
@@ -52,11 +50,6 @@ for ($i = 0; $i -lt $ArgsList.Count; $i++) {
             Require-Value $i $ArgsList[$i]
             $i++
             $MirrorUrl = $ArgsList[$i]
-        }
-        "--version" {
-            Require-Value $i $ArgsList[$i]
-            $i++
-            $VersionPin = $ArgsList[$i]
         }
         "--install-dir" {
             Require-Value $i $ArgsList[$i]
@@ -148,8 +141,7 @@ function Test-DirOnPath {
 }
 
 $PlatformKey = Get-PlatformKey
-$ManifestName = if ($VersionPin) { $VersionPin } else { "latest" }
-$ManifestUrl = "$MirrorUrl/$Provider/$ManifestName.json"
+$ManifestUrl = "$MirrorUrl/$Provider/latest.json"
 $TempDir = Join-Path ([System.IO.Path]::GetTempPath()) "agents-$Provider-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
 

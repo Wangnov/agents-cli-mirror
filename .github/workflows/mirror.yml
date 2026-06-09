@@ -98,6 +98,46 @@ jobs:
             esac
           }
 
+          stage_latest_manifest() {
+            local provider="$1"
+            local manifest="$2"
+            local artifacts_root="$3"
+
+            mkdir -p "$artifacts_root/$provider"
+            cp "$manifest" "$artifacts_root/$provider/latest.json"
+          }
+
+          verify_live_latest() {
+            local provider="$1"
+            local expected_version="$2"
+            local verified_manifest="$3"
+            local verified_version
+
+            curl -fsSL --retry 6 --retry-delay 5 \
+              -o "$verified_manifest" \
+              "$mirror_url/$provider/latest.json?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${provider}"
+            verified_version="$(jq -er '.version' "$verified_manifest")"
+
+            if [ "$verified_version" != "$expected_version" ]; then
+              echo "::error:: $provider verification failed: expected $expected_version, got $verified_version" >&2
+              exit 1
+            fi
+
+            echo "$provider verified latest.json ($verified_version)"
+          }
+
+          verify_live_install_scripts() {
+            local provider="$1"
+            local ext
+
+            for ext in sh ps1; do
+              curl -fsSL --retry 6 --retry-delay 5 \
+                -o /dev/null \
+                "$mirror_url/$provider/install.$ext?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${provider}-${ext}"
+              echo "$provider verified install.$ext"
+            done
+          }
+
           for provider in codex claude; do
             echo "==> $provider: build manifest"
             manifest="$work_root/${provider}-latest.json"
@@ -119,7 +159,19 @@ jobs:
             fi
 
             if [ "$live_version" = "$built_version" ]; then
-              echo "$provider up to date ($built_version); skipping"
+              echo "$provider up to date ($built_version); syncing latest manifest and installers"
+              stage_latest_manifest "$provider" "$manifest" "$artifacts_root"
+
+              echo "==> $provider: sync R2 latest manifest and installers"
+              PROVIDERS="$provider" bash scripts/sync-r2.sh "$artifacts_root"
+
+              echo "==> $provider: sync secondary S3 latest manifest and installers"
+              PROVIDERS="$provider" bash scripts/sync-secondary-s3.sh "$artifacts_root"
+
+              echo "==> $provider: verify live mirror objects"
+              verified_manifest="$work_root/${provider}-verified.json"
+              verify_live_latest "$provider" "$built_version" "$verified_manifest"
+              verify_live_install_scripts "$provider"
               continue
             fi
 
@@ -143,15 +195,5 @@ jobs:
 
             echo "==> $provider: verify live mirror"
             verified_manifest="$work_root/${provider}-verified.json"
-            curl -fsSL --retry 6 --retry-delay 5 \
-              -o "$verified_manifest" \
-              "$mirror_url/$provider/latest.json?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${provider}"
-            verified_version="$(jq -er '.version' "$verified_manifest")"
-
-            if [ "$verified_version" != "$built_version" ]; then
-              echo "::error:: $provider verification failed: expected $built_version, got $verified_version" >&2
-              exit 1
-            fi
-
-            echo "$provider verified ($verified_version)"
+            verify_live_latest "$provider" "$built_version" "$verified_manifest"
           done
