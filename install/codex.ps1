@@ -168,6 +168,16 @@ try {
     if ($Entry.file -match "[/\\]") {
         Fail "Manifest artifact file is invalid: $($Entry.file)"
     }
+    $ArchiveMember = ""
+    if ($Entry.PSObject.Properties["archive_member"]) {
+        $ArchiveMember = [string]$Entry.archive_member
+    }
+    if (-not $ArchiveMember -and $Entry.file.ToLowerInvariant().EndsWith(".exe.zip")) {
+        $ArchiveMember = $Entry.file.Substring(0, $Entry.file.Length - ".zip".Length)
+    }
+    if ($ArchiveMember -match "[/\\]") {
+        Fail "Manifest archive member is invalid: $ArchiveMember"
+    }
 
     $ArtifactUrl = "$MirrorUrl/$Provider/$($Manifest.version)/$PlatformKey/$($Entry.file)"
     $ArtifactPath = Join-Path $TempDir $Entry.file
@@ -180,17 +190,21 @@ try {
     }
 
     $BinPath = $ArtifactPath
+    $HelperItems = @()
     if ($Entry.file.ToLowerInvariant().EndsWith(".zip")) {
         $ExtractDir = Join-Path $TempDir "extract"
         New-Item -ItemType Directory -Force -Path $ExtractDir | Out-Null
         Expand-Archive -Path $ArtifactPath -DestinationPath $ExtractDir -Force
         $BinaryItem = Get-ChildItem -Path $ExtractDir -Recurse | Where-Object {
-            -not $_.PSIsContainer -and $_.Name -eq $Entry.bin
+            -not $_.PSIsContainer -and $_.Name -eq $ArchiveMember
         } | Select-Object -First 1
         if (-not $BinaryItem) {
-            Fail "Binary '$($Entry.bin)' was not found after extraction"
+            Fail "Archive member '$ArchiveMember' was not found after extraction"
         }
         $BinPath = $BinaryItem.FullName
+        $HelperItems = @(Get-ChildItem -Path $ExtractDir -Recurse | Where-Object {
+            -not $_.PSIsContainer -and $_.Extension.ToLowerInvariant() -eq ".exe" -and $_.Name -ne $ArchiveMember
+        })
     } elseif ($Entry.file.ToLowerInvariant().EndsWith(".tar.gz") -or $Entry.file.ToLowerInvariant().EndsWith(".tgz")) {
         Fail "Windows installer cannot extract tar.gz artifact '$($Entry.file)'"
     }
@@ -198,6 +212,9 @@ try {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     $InstallPath = Join-Path $InstallDir $Entry.bin
     Copy-Item -Path $BinPath -Destination $InstallPath -Force
+    foreach ($HelperItem in $HelperItems) {
+        Copy-Item -Path $HelperItem.FullName -Destination (Join-Path $InstallDir $HelperItem.Name) -Force
+    }
 
     Write-Host "Success: installed $Provider $($Manifest.version) to $InstallPath"
     if (-not (Test-DirOnPath $InstallDir)) {

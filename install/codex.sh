@@ -11,6 +11,7 @@ MANIFEST_VERSION=""
 ARTIFACT_FILE=""
 ARTIFACT_SHA256=""
 ARTIFACT_BIN=""
+ARTIFACT_ARCHIVE_MEMBER=""
 
 usage() {
     cat <<'EOF'
@@ -130,6 +131,7 @@ parse_manifest_with_jq() {
     ARTIFACT_FILE="$(jq -r --arg key "$platform_key" '.platforms[$key].file // ""' "$manifest_path")"
     ARTIFACT_SHA256="$(jq -r --arg key "$platform_key" '.platforms[$key].sha256 // ""' "$manifest_path")"
     ARTIFACT_BIN="$(jq -r --arg key "$platform_key" '.platforms[$key].bin // ""' "$manifest_path")"
+    ARTIFACT_ARCHIVE_MEMBER="$(jq -r --arg key "$platform_key" '.platforms[$key].archive_member // ""' "$manifest_path")"
 }
 
 parse_manifest_with_python() {
@@ -152,6 +154,7 @@ values = {
     "ARTIFACT_FILE": entry.get("file", ""),
     "ARTIFACT_SHA256": entry.get("sha256", ""),
     "ARTIFACT_BIN": entry.get("bin", ""),
+    "ARTIFACT_ARCHIVE_MEMBER": entry.get("archive_member", ""),
 }
 for key, value in values.items():
     print(f"{key}={shlex.quote(str(value))}")
@@ -175,6 +178,7 @@ parse_manifest_with_awk() {
     ARTIFACT_FILE="$(printf '%s\n' "$block" | awk -F'"' '/"file"[[:space:]]*:/ { print $4; exit }')"
     ARTIFACT_SHA256="$(printf '%s\n' "$block" | awk -F'"' '/"sha256"[[:space:]]*:/ { print $4; exit }')"
     ARTIFACT_BIN="$(printf '%s\n' "$block" | awk -F'"' '/"bin"[[:space:]]*:/ { print $4; exit }')"
+    ARTIFACT_ARCHIVE_MEMBER="$(printf '%s\n' "$block" | awk -F'"' '/"archive_member"[[:space:]]*:/ { print $4; exit }')"
 }
 
 parse_manifest() {
@@ -194,7 +198,9 @@ extract_artifact() {
     local artifact_path="$1"
     local extract_dir="$2"
     local bin_name="$3"
+    local archive_member="${4:-}"
     local found
+    local file_count
 
     case "$artifact_path" in
         *.tar.gz|*.tgz)
@@ -215,8 +221,19 @@ extract_artifact() {
             ;;
     esac
 
-    found="$(find "$extract_dir" -type f -name "$bin_name" -print | sed -n '1p')"
-    [ -n "$found" ] || die "Binary '$bin_name' was not found after extraction"
+    if [ -n "$archive_member" ]; then
+        found="$(find "$extract_dir" -type f -name "$archive_member" -print | sed -n '1p')"
+        [ -n "$found" ] || die "Archive member '$archive_member' was not found after extraction"
+    else
+        found="$(find "$extract_dir" -type f -name "$bin_name" -print | sed -n '1p')"
+        if [ -z "$found" ]; then
+            file_count="$(find "$extract_dir" -type f -print | wc -l | tr -d '[:space:]')"
+            if [ "$file_count" = "1" ]; then
+                found="$(find "$extract_dir" -type f -print | sed -n '1p')"
+            fi
+        fi
+        [ -n "$found" ] || die "Binary '$bin_name' was not found after extraction"
+    fi
     printf '%s\n' "$found"
 }
 
@@ -249,6 +266,9 @@ fi
 case "$ARTIFACT_FILE" in
     */*|"") die "Manifest artifact file is invalid: $ARTIFACT_FILE" ;;
 esac
+case "$ARTIFACT_ARCHIVE_MEMBER" in
+    */*|*\\*) die "Manifest archive member is invalid: $ARTIFACT_ARCHIVE_MEMBER" ;;
+esac
 
 ARTIFACT_URL="$MIRROR_URL/$PROVIDER/$MANIFEST_VERSION/$PLATFORM_KEY/$ARTIFACT_FILE"
 ARTIFACT_PATH="$TMP_DIR/$ARTIFACT_FILE"
@@ -260,7 +280,7 @@ ACTUAL_SHA256="$(lowercase "$(sha256_file "$ARTIFACT_PATH")")"
 
 EXTRACT_DIR="$TMP_DIR/extract"
 mkdir -p "$EXTRACT_DIR"
-BIN_PATH="$(extract_artifact "$ARTIFACT_PATH" "$EXTRACT_DIR" "$ARTIFACT_BIN")"
+BIN_PATH="$(extract_artifact "$ARTIFACT_PATH" "$EXTRACT_DIR" "$ARTIFACT_BIN" "$ARTIFACT_ARCHIVE_MEMBER")"
 chmod +x "$BIN_PATH"
 
 mkdir -p "$INSTALL_DIR"

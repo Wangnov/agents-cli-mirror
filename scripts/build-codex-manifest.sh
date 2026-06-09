@@ -75,6 +75,13 @@ PLATFORMS = {
     "aarch64-pc-windows-msvc":   ("codex-aarch64-pc-windows-msvc.exe.zip",   "codex.exe"),
 }
 
+def archive_member_for(fname):
+    if fname.endswith(".tar.gz"):
+        return fname[:-len(".tar.gz")]
+    if fname.endswith(".exe.zip"):
+        return fname[:-len(".zip")]
+    sys.exit(f"::error:: do not know how to derive archive member for {fname}")
+
 assets = {a["name"]: a for a in rel.get("assets", [])}
 version = rel["tag_name"]
 
@@ -91,6 +98,7 @@ for triple, (fname, binname) in PLATFORMS.items():
         "sha256": digest.split(":", 1)[1],
         "size": a["size"],
         "bin": binname,
+        "archive_member": archive_member_for(fname),
     }
 
 manifest = {
