@@ -10,7 +10,8 @@ export default {
       return new Response("Not found", { status: 404 });
     }
 
-    const objectKey = objectKeyForPath(url.pathname, env.SECONDARY_S3_PREFIX || "");
+    const objectKey = objectKeyForPath(url.pathname);
+    const secondaryObjectKey = objectKeyWithPrefix(objectKey, env.SECONDARY_S3_PREFIX || "");
     const country = request.cf?.country || request.headers.get("CF-IPCountry") || "";
     const secondaryCountryCodes = new Set(
       (env.SECONDARY_COUNTRY_CODES || DEFAULT_SECONDARY_COUNTRY_CODES)
@@ -23,7 +24,7 @@ export default {
       const signedUrl = await presignS3GetUrl({
         endpoint: env.SECONDARY_S3_ENDPOINT,
         bucket: env.SECONDARY_S3_BUCKET,
-        key: objectKey,
+        key: secondaryObjectKey,
         region: env.SECONDARY_S3_REGION || "auto",
         accessKeyId: env.SECONDARY_S3_ACCESS_KEY_ID,
         secretAccessKey: env.SECONDARY_S3_SECRET_ACCESS_KEY,
@@ -78,10 +79,13 @@ function withObjectKeyAndSearch(baseUrl, objectKey, search) {
   return target;
 }
 
-function objectKeyForPath(pathname, prefix) {
+function objectKeyForPath(pathname) {
+  return pathname.replace(/^\/+/, "");
+}
+
+function objectKeyWithPrefix(objectKey, prefix) {
   const cleanPrefix = prefix.replace(/^\/+|\/+$/g, "");
-  const cleanPath = pathname.replace(/^\/+/, "");
-  return cleanPrefix ? `${cleanPrefix}/${cleanPath}` : cleanPath;
+  return cleanPrefix ? `${cleanPrefix}/${objectKey}` : objectKey;
 }
 
 async function presignS3GetUrl(options) {

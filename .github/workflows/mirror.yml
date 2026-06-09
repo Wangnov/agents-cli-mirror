@@ -61,6 +61,13 @@ jobs:
           }
           trap cleanup EXIT
 
+          s3_head_config="$work_root/s3-head.conf"
+          cat > "$s3_head_config" <<'EOF'
+          [default]
+          s3 =
+              addressing_style = path
+          EOF
+
           build_manifest() {
             local provider="$1"
             local manifest="$2"
@@ -138,6 +145,127 @@ jobs:
             done
           }
 
+          manifest_object_keys() {
+            local provider="$1"
+            local manifest="$2"
+            local keys_file="$3"
+
+            jq -er --arg provider "$provider" '
+              def invalid($msg): error($msg);
+              .version as $version
+              | if (($version | type) != "string" or $version == "" or ($version | contains("/"))) then
+                  invalid("invalid manifest version")
+                elif ((.platforms | type) != "object" or (.platforms | length) == 0) then
+                  invalid("invalid manifest platforms")
+                else
+                  [
+                    ($provider + "/latest.json"),
+                    ($provider + "/install.sh"),
+                    ($provider + "/install.ps1")
+                  ] + (
+                    .platforms
+                    | to_entries
+                    | map(
+                        if ((.key | type) != "string" or .key == "" or (.key | contains("/"))) then
+                          invalid("invalid manifest platform key")
+                        elif ((.value | type) != "object") then
+                          invalid("invalid manifest platform entry")
+                        elif ((.value.file | type) != "string" or .value.file == "" or (.value.file | contains("/"))) then
+                          invalid("invalid manifest artifact file")
+                        else
+                          ($provider + "/" + $version + "/" + .key + "/" + .value.file)
+                        end
+                      )
+                  )
+                  | .[]
+                end
+            ' "$manifest" > "$keys_file"
+          }
+
+          backend_objects_present() {
+            local backend_name="$1"
+            local endpoint="$2"
+            local bucket="$3"
+            local region="$4"
+            local access_key="$5"
+            local secret_key="$6"
+            local keys_file="$7"
+            local missing=0
+            local key
+
+            if [ -z "$endpoint" ] || [ -z "$bucket" ] || [ -z "$access_key" ] || [ -z "$secret_key" ]; then
+              echo "::warning:: $backend_name completeness check is missing S3 configuration"
+              return 1
+            fi
+
+            while IFS= read -r key; do
+              [ -n "$key" ] || continue
+              if ! AWS_ACCESS_KEY_ID="$access_key" \
+                AWS_SECRET_ACCESS_KEY="$secret_key" \
+                AWS_DEFAULT_REGION="$region" \
+                AWS_EC2_METADATA_DISABLED=true \
+                AWS_CONFIG_FILE="$s3_head_config" \
+                aws s3api head-object \
+                  --endpoint-url "$endpoint" \
+                  --region "$region" \
+                  --bucket "$bucket" \
+                  --key "$key" \
+                  >/dev/null 2>&1; then
+                echo "::warning:: $backend_name missing s3://$bucket/$key"
+                missing=1
+              fi
+            done < "$keys_file"
+
+            return "$missing"
+          }
+
+          secondary_s3_enabled() {
+            [ -n "${SECONDARY_S3_ENDPOINT:-}" ] &&
+              [ -n "${SECONDARY_S3_BUCKET:-}" ] &&
+              [ -n "${SECONDARY_S3_ACCESS_KEY_ID:-}" ] &&
+              [ -n "${SECONDARY_S3_SECRET_ACCESS_KEY:-}" ]
+          }
+
+          enabled_backends_have_objects() {
+            local provider="$1"
+            local manifest="$2"
+            local keys_file="$work_root/${provider}-object-keys.txt"
+            local object_count
+            local all_present=0
+
+            manifest_object_keys "$provider" "$manifest" "$keys_file"
+            object_count="$(awk 'END { print NR }' "$keys_file")"
+            echo "$provider unchanged version: checking $object_count expected objects on enabled backends"
+
+            if ! backend_objects_present \
+              "R2" \
+              "$R2_S3_ENDPOINT" \
+              "${R2_BUCKET:-agentclimirror}" \
+              "${AWS_DEFAULT_REGION:-auto}" \
+              "${AWS_ACCESS_KEY_ID:-}" \
+              "${AWS_SECRET_ACCESS_KEY:-}" \
+              "$keys_file"; then
+              all_present=1
+            fi
+
+            if secondary_s3_enabled; then
+              if ! backend_objects_present \
+                "secondary S3" \
+                "$SECONDARY_S3_ENDPOINT" \
+                "$SECONDARY_S3_BUCKET" \
+                "${SECONDARY_S3_REGION:-us-east-1}" \
+                "$SECONDARY_S3_ACCESS_KEY_ID" \
+                "$SECONDARY_S3_SECRET_ACCESS_KEY" \
+                "$keys_file"; then
+                all_present=1
+              fi
+            else
+              echo "secondary S3 is not configured; skipping secondary completeness check"
+            fi
+
+            return "$all_present"
+          }
+
           for provider in codex claude; do
             echo "==> $provider: build manifest"
             manifest="$work_root/${provider}-latest.json"
@@ -159,23 +287,30 @@ jobs:
             fi
 
             if [ "$live_version" = "$built_version" ]; then
-              echo "$provider up to date ($built_version); syncing latest manifest and installers"
-              stage_latest_manifest "$provider" "$manifest" "$artifacts_root"
+              echo "$provider up to date ($built_version); checking enabled backend completeness"
+              if enabled_backends_have_objects "$provider" "$manifest"; then
+                echo "$provider enabled backends already have all current objects; syncing latest manifest and installers"
+                stage_latest_manifest "$provider" "$manifest" "$artifacts_root"
 
-              echo "==> $provider: sync R2 latest manifest and installers"
-              PROVIDERS="$provider" bash scripts/sync-r2.sh "$artifacts_root"
+                echo "==> $provider: sync R2 latest manifest and installers"
+                PROVIDERS="$provider" bash scripts/sync-r2.sh "$artifacts_root"
 
-              echo "==> $provider: sync secondary S3 latest manifest and installers"
-              PROVIDERS="$provider" bash scripts/sync-secondary-s3.sh "$artifacts_root"
+                echo "==> $provider: sync secondary S3 latest manifest and installers"
+                PROVIDERS="$provider" bash scripts/sync-secondary-s3.sh "$artifacts_root"
 
-              echo "==> $provider: verify live mirror objects"
-              verified_manifest="$work_root/${provider}-verified.json"
-              verify_live_latest "$provider" "$built_version" "$verified_manifest"
-              verify_live_install_scripts "$provider"
-              continue
+                echo "==> $provider: verify live mirror objects"
+                verified_manifest="$work_root/${provider}-verified.json"
+                verify_live_latest "$provider" "$built_version" "$verified_manifest"
+                verify_live_install_scripts "$provider"
+                continue
+              fi
+
+              echo "$provider unchanged version ($built_version) is missing objects on an enabled backend; running full download and sync"
             fi
 
-            if [ -n "$live_version" ]; then
+            if [ "$live_version" = "$built_version" ]; then
+              echo "$provider backfill needed for current version $built_version"
+            elif [ -n "$live_version" ]; then
               echo "$provider update needed: live=$live_version built=$built_version"
             else
               echo "$provider update needed: live version unavailable built=$built_version"
