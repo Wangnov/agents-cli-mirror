@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Ensure tools
         run: |
@@ -67,6 +67,8 @@ jobs:
           s3 =
               addressing_style = path
           EOF
+          s3_head_connect_timeout="${S3_HEAD_CONNECT_TIMEOUT_SECONDS:-10}"
+          s3_head_read_timeout="${S3_HEAD_READ_TIMEOUT_SECONDS:-30}"
 
           build_manifest() {
             local provider="$1"
@@ -283,6 +285,8 @@ jobs:
                   --region "$region" \
                   --bucket "$bucket" \
                   --key "$key" \
+                  --cli-connect-timeout "$s3_head_connect_timeout" \
+                  --cli-read-timeout "$s3_head_read_timeout" \
                   >/dev/null 2>&1; then
                 echo "::warning:: $backend_name missing s3://$bucket/$key"
                 missing=1
