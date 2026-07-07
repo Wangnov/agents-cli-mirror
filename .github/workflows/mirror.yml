@@ -3,7 +3,13 @@ name: pure-mirror
 'on':
   workflow_dispatch:
   schedule:
-    - cron: "17,47 * * * *"
+    # Low-frequency fallback only. The primary schedule is the Cloudflare Cron
+    # dispatcher (every 15 min at 7,22,37,52). Running GitHub's own schedule
+    # every 30 min stacked extra triggers on top of the dispatch; with
+    # cancel-in-progress:false, GitHub evicts the older *pending* run in the
+    # group and marks it failed. A 6-hour offset fallback keeps resilience if
+    # the dispatcher is down without colliding with the 15-min marks.
+    - cron: "11 */6 * * *"
 
 concurrency:
   group: pure-mirror
