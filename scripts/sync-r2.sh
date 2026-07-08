@@ -13,6 +13,10 @@
 #   IMMUTABLE_CACHE_CONTROL    default: public, max-age=31536000, immutable
 #   SHORT_CACHE_CONTROL        default: no-cache
 #   INSTALL_CACHE_CONTROL      default: no-cache
+#   R2_S3_UPLOAD_ATTEMPTS           default: 4
+#   R2_S3_CONNECT_TIMEOUT_SECONDS   default: 10
+#   R2_S3_READ_TIMEOUT_SECONDS      default: 60
+#   R2_S3_RETRY_SLEEP_SECONDS       default: 5
 #
 # Usage:
 #   scripts/sync-r2.sh <artifacts-root>
@@ -45,11 +49,30 @@ providers="${PROVIDERS:-codex claude}"
 immutable_cache="${IMMUTABLE_CACHE_CONTROL:-public, max-age=31536000, immutable}"
 short_cache="${SHORT_CACHE_CONTROL:-no-cache}"
 install_cache="${INSTALL_CACHE_CONTROL:-no-cache}"
+upload_attempts="${R2_S3_UPLOAD_ATTEMPTS:-4}"
+connect_timeout="${R2_S3_CONNECT_TIMEOUT_SECONDS:-10}"
+read_timeout="${R2_S3_READ_TIMEOUT_SECONDS:-60}"
+retry_sleep="${R2_S3_RETRY_SLEEP_SECONDS:-5}"
 
 if [[ -z "$bucket" || -z "$providers" ]]; then
   echo "R2_BUCKET and PROVIDERS must not be empty." >&2
   exit 2
 fi
+
+require_positive_int() {
+  local name="$1"
+  local value="$2"
+
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "$name must be a positive integer, got: $value" >&2
+    exit 2
+  fi
+}
+
+require_positive_int R2_S3_UPLOAD_ATTEMPTS "$upload_attempts"
+require_positive_int R2_S3_CONNECT_TIMEOUT_SECONDS "$connect_timeout"
+require_positive_int R2_S3_READ_TIMEOUT_SECONDS "$read_timeout"
+require_positive_int R2_S3_RETRY_SLEEP_SECONDS "$retry_sleep"
 
 tmp_config="$(mktemp "${TMPDIR:-/tmp}/agents-cli-r2.XXXXXX")"
 cleanup() {
@@ -85,6 +108,9 @@ upload_file() {
   local key="${2#/}"
   local cache_control="$3"
   local content_type
+  local attempt
+  local delay
+  local rc
 
   if [[ ! -f "$file" ]]; then
     echo "Not a file: $file" >&2
@@ -97,13 +123,33 @@ upload_file() {
 
   content_type="$(content_type_for "$file")"
 
-  echo "upload s3://$bucket/$key"
-  aws s3 cp "$file" "s3://$bucket/$key" \
-    --endpoint-url "$R2_S3_ENDPOINT" \
-    --region "$region" \
-    --content-type "$content_type" \
-    --cache-control "$cache_control" \
-    --no-progress
+  attempt=1
+  delay="$retry_sleep"
+  while true; do
+    echo "upload s3://$bucket/$key (attempt $attempt/$upload_attempts)"
+    if aws s3 cp "$file" "s3://$bucket/$key" \
+      --endpoint-url "$R2_S3_ENDPOINT" \
+      --region "$region" \
+      --content-type "$content_type" \
+      --cache-control "$cache_control" \
+      --cli-connect-timeout "$connect_timeout" \
+      --cli-read-timeout "$read_timeout" \
+      --no-progress; then
+      return 0
+    else
+      rc="$?"
+    fi
+
+    if ((attempt >= upload_attempts)); then
+      echo "upload failed after $attempt attempts: s3://$bucket/$key" >&2
+      return "$rc"
+    fi
+
+    echo "::warning:: R2 upload failed for s3://$bucket/$key (exit $rc); retrying in ${delay}s" >&2
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+  done
 }
 
 validate_artifact_relpath() {
