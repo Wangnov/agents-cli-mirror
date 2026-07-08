@@ -57,6 +57,7 @@ jobs:
           SECONDARY_S3_ACCESS_KEY_ID: ${{ secrets.SECONDARY_S3_ACCESS_KEY_ID }}
           SECONDARY_S3_SECRET_ACCESS_KEY: ${{ secrets.SECONDARY_S3_SECRET_ACCESS_KEY }}
           SECONDARY_S3_REGION: ${{ secrets.SECONDARY_S3_REGION }}
+          SECONDARY_S3_REQUIRED: ${{ vars.SECONDARY_S3_REQUIRED }}
         run: |
           set -euo pipefail
 
@@ -309,6 +310,59 @@ jobs:
               [ -n "${SECONDARY_S3_SECRET_ACCESS_KEY:-}" ]
           }
 
+          secondary_s3_required() {
+            case "${SECONDARY_S3_REQUIRED:-false}" in
+              1|true|TRUE|yes|YES|on|ON)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          sync_secondary_s3() {
+            local provider="$1"
+            local artifacts_root="$2"
+
+            if ! secondary_s3_enabled; then
+              if secondary_s3_required; then
+                echo "::error:: secondary S3 is required but not configured" >&2
+                exit 1
+              fi
+
+              echo "secondary S3 is not configured; skipping secondary sync"
+              return 0
+            fi
+
+            if PROVIDERS="$provider" bash scripts/sync-secondary-s3.sh "$artifacts_root"; then
+              return 0
+            fi
+
+            if secondary_s3_required; then
+              echo "::error:: secondary S3 sync failed for $provider" >&2
+              exit 1
+            fi
+
+            echo "::warning:: secondary S3 sync failed for $provider; continuing because SECONDARY_S3_REQUIRED is not true"
+          }
+
+          prune_provider() {
+            local provider="$1"
+
+            if secondary_s3_required; then
+              PROVIDERS="$provider" bash scripts/prune.sh
+              return
+            fi
+
+            SECONDARY_S3_ENDPOINT= \
+              SECONDARY_S3_BUCKET= \
+              SECONDARY_S3_ACCESS_KEY_ID= \
+              SECONDARY_S3_SECRET_ACCESS_KEY= \
+              PROVIDERS="$provider" \
+              bash scripts/prune.sh
+          }
+
           enabled_backends_have_objects() {
             local provider="$1"
             local manifest="$2"
@@ -331,7 +385,7 @@ jobs:
               all_present=1
             fi
 
-            if secondary_s3_enabled; then
+            if secondary_s3_enabled && secondary_s3_required; then
               if ! backend_objects_present \
                 "secondary S3" \
                 "$SECONDARY_S3_ENDPOINT" \
@@ -342,6 +396,11 @@ jobs:
                 "$keys_file"; then
                 all_present=1
               fi
+            elif secondary_s3_required; then
+              echo "::error:: secondary S3 is required but not configured" >&2
+              all_present=1
+            elif secondary_s3_enabled; then
+              echo "secondary S3 completeness is best-effort; skipping required completeness check"
             else
               echo "secondary S3 is not configured; skipping secondary completeness check"
             fi
@@ -408,10 +467,10 @@ jobs:
                 PROVIDERS="$provider" bash scripts/sync-r2.sh "$artifacts_root"
 
                 echo "==> $provider: sync secondary S3 latest manifest and installers"
-                PROVIDERS="$provider" bash scripts/sync-secondary-s3.sh "$artifacts_root"
+                sync_secondary_s3 "$provider" "$artifacts_root"
 
                 echo "==> $provider: prune"
-                PROVIDERS="$provider" bash scripts/prune.sh
+                prune_provider "$provider"
 
                 echo "==> $provider: verify live mirror objects"
                 verified_manifest="$work_root/${provider}-verified.json"
@@ -442,10 +501,10 @@ jobs:
             PROVIDERS="$provider" bash scripts/sync-r2.sh "$artifacts_root"
 
             echo "==> $provider: sync secondary S3"
-            PROVIDERS="$provider" bash scripts/sync-secondary-s3.sh "$artifacts_root"
+            sync_secondary_s3 "$provider" "$artifacts_root"
 
             echo "==> $provider: prune"
-            PROVIDERS="$provider" bash scripts/prune.sh
+            prune_provider "$provider"
 
             echo "==> $provider: verify live mirror"
             verified_manifest="$work_root/${provider}-verified.json"
