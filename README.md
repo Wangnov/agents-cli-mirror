@@ -37,21 +37,22 @@ irm https://install.agentsmirror.com/codex/install.ps1 | iex
 
 ## 架构
 
-`.github/workflows/mirror.yml` 是唯一的镜像工作流，支持手动触发，并按 `17,47 * * * *` 定时运行。每次运行会按 provider 独立处理：
+`.github/workflows/mirror.yml` 是镜像同步工作流，支持手动触发。Cloudflare Cron 每 15 分钟触发一次，GitHub 的 `11 */6 * * *` 定时任务作为后备。每次运行会按 provider 独立处理：
 
 1. 生成 manifest：
    - `codex` 从 GitHub Releases `openai/codex` 读取最新 release，只镜像 6 个可安装 CLI 归档。
    - `claude` 从 Claude Code GCS release bucket 读取 `/latest` 文本指针，再读取 `<version>/manifest.json` 里的 checksum 和 size。
-2. 下载产物并校验 SHA256。
-3. 上传到 Cloudflare R2。
-4. 上传到 IHEP 二级 S3；如果二级 S3 环境变量未完整配置，脚本会跳过这一步。
-5. prune，只保留每个 provider 当前 `latest.json` 指向的版本、安装脚本和 `latest.json`。
+2. 清理旧版本，为新版本腾出空间；保留 R2 当前版本和二级 S3 自己的 `latest.json` 引用的版本。
+3. 下载缺失的产物并校验 SHA256。
+4. 上传到 Cloudflare R2 和 IHEP 二级 S3。默认要求二级 S3 同步成功，缺失配置或上传失败会使工作流失败。
+5. 再次 prune；两侧同步完成后，只保留当前版本、安装脚本和 `latest.json`。
 6. 从 `https://install.agentsmirror.com/<provider>/latest.json` 拉取并校验线上版本。
 
 下载入口由 `cloudflare/download-router/` 里的 Worker 提供。它只服务 `/codex/` 和 `/claude/` 路径：
 
 - 默认把请求 302 到 `GLOBAL_MIRROR_BASE_URL` 指向的 R2 公网域名。
-- 当 Cloudflare 识别到访问国家在 `SECONDARY_COUNTRY_CODES` 中，且二级 S3 凭据完整时，Worker 会生成 IHEP 预签名 URL 并 302 到该地址。
+- 当访问国家在 `SECONDARY_COUNTRY_CODES` 中且二级 S3 凭据完整时，Worker 先检查可用性，再生成 IHEP 预签名 URL 并 302 到该地址。安装包只检查 HEAD，文件正文直接由存储服务下载。
+- 二级源缺文件、请求失败或 3 秒内无响应时，回退到 R2；`latest.json` 还会比较版本和平台校验信息，防止安装停更的旧版本。
 - 默认中国大陆流量匹配 `CN`，预签名 URL 默认有效期是 3600 秒。
 
 ## 对象布局
@@ -122,7 +123,9 @@ IHEP 二级 S3：
 - `SECONDARY_S3_SECRET_ACCESS_KEY`
 - `SECONDARY_S3_REGION`，未配置时脚本默认使用 `us-east-1`
 
-`sync-secondary-s3.sh` 在二级 S3 必填项缺失时会输出 warning 并跳过上传；`prune.sh` 只有在二级 S3 配置完整时才清理二级存储。
+工作流默认要求二级 S3 成功。只使用 R2 的部署可以设置 repository variable `SECONDARY_S3_REQUIRED=false`，允许缺失二级源或上传失败；已配置的二级源仍会检查完整性并清理旧版本。
+
+`scripts/prune.sh` 支持 `PRUNE_DRY_RUN=true`，列出清理候选而不删除。清理二级源时，同时保护 R2 当前版本和二级源仍在发布的版本；如果二级 manifest 无法读取或无效，会停止二级清理。
 
 ## Worker 配置
 
@@ -143,6 +146,13 @@ Worker secrets：
 部署后，`install.agentsmirror.com/*` 路由到该 Worker。
 
 ## 本地验证
+
+```bash
+npm test
+for script in scripts/*.sh install/*.sh; do bash -n "$script"; done
+```
+
+回归测试覆盖二级源失效/停更的 R2 回退、GET/HEAD 签名、旧版本清理和同步失败策略。需要 Node.js 24、Python 3 和 Bash，无需安装 npm 依赖。
 
 ```bash
 rm -f /tmp/verify-claude.json

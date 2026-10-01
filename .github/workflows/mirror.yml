@@ -311,7 +311,7 @@ jobs:
           }
 
           secondary_s3_required() {
-            case "${SECONDARY_S3_REQUIRED:-false}" in
+            case "${SECONDARY_S3_REQUIRED:-true}" in
               1|true|TRUE|yes|YES|on|ON)
                 return 0
                 ;;
@@ -349,18 +349,7 @@ jobs:
 
           prune_provider() {
             local provider="$1"
-
-            if secondary_s3_required; then
-              PROVIDERS="$provider" bash scripts/prune.sh
-              return
-            fi
-
-            SECONDARY_S3_ENDPOINT= \
-              SECONDARY_S3_BUCKET= \
-              SECONDARY_S3_ACCESS_KEY_ID= \
-              SECONDARY_S3_SECRET_ACCESS_KEY= \
-              PROVIDERS="$provider" \
-              bash scripts/prune.sh
+            PROVIDERS="$provider" bash scripts/prune.sh
           }
 
           enabled_backends_have_objects() {
@@ -385,7 +374,7 @@ jobs:
               all_present=1
             fi
 
-            if secondary_s3_enabled && secondary_s3_required; then
+            if secondary_s3_enabled; then
               if ! backend_objects_present \
                 "secondary S3" \
                 "$SECONDARY_S3_ENDPOINT" \
@@ -399,8 +388,6 @@ jobs:
             elif secondary_s3_required; then
               echo "::error:: secondary S3 is required but not configured" >&2
               all_present=1
-            elif secondary_s3_enabled; then
-              echo "secondary S3 completeness is best-effort; skipping required completeness check"
             else
               echo "secondary S3 is not configured; skipping secondary completeness check"
             fi
@@ -416,6 +403,13 @@ jobs:
 
             build_manifest "$provider" "$manifest"
             built_version="$(jq -er '.version' "$manifest")"
+
+            # Free old releases before uploading, retaining each backend's live
+            # manifest version so a failed upload cannot break existing installs.
+            if curl -fsSL "$mirror_url/$provider/latest.json" >/dev/null; then
+              echo "==> $provider: prune before sync"
+              prune_provider "$provider"
+            fi
 
             echo "==> $provider: stale check against live mirror"
             live_manifest="$work_root/${provider}-live.json"
