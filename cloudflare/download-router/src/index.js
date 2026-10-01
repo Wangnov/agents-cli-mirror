@@ -53,7 +53,8 @@ export default {
 async function secondaryIsReady(env, objectKey, signingOptions, signedUrl) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 3000);
-  const options = { signal: controller.signal, redirect: "manual" };
+  // Cloudflare may turn a cacheable HEAD into GET, invalidating its S3 signature.
+  const options = { signal: controller.signal, redirect: "manual", cache: "no-store" };
   try {
     if (objectKey.endsWith("/latest.json")) {
       const [secondary, primary] = await Promise.all([
