@@ -11,6 +11,7 @@
 #   AWS_DEFAULT_REGION         default: auto
 #   PROVIDERS                  default: codex claude
 #   PRUNE_GRACE_DAYS           default: 0
+#   PRUNE_DRY_RUN              default: false; list candidates without deleting
 #
 # Optional env for IHEP (S3-compatible object storage):
 #   SECONDARY_S3_ENDPOINT
@@ -36,6 +37,11 @@ r2_access_key="$AWS_ACCESS_KEY_ID"
 r2_secret_key="$AWS_SECRET_ACCESS_KEY"
 providers="${PROVIDERS:-codex claude}"
 grace_days="${PRUNE_GRACE_DAYS:-0}"
+dry_run="${PRUNE_DRY_RUN:-false}"
+case "$dry_run" in
+  true|false) ;;
+  *) echo "PRUNE_DRY_RUN must be true or false." >&2; exit 2 ;;
+esac
 
 if [[ -z "$r2_bucket" || -z "$providers" ]]; then
   echo "R2_BUCKET and PROVIDERS must not be empty." >&2
@@ -143,7 +149,7 @@ read_r2_versions() {
     fi
 
     version="$(extract_version "$latest_json")"
-    if [[ -z "$version" ]]; then
+    if [[ -z "$version" || "$version" == */* || "$version" =~ [[:space:]] ]]; then
       echo "R2 latest.json for $provider is missing .version" >&2
       exit 1
     fi
@@ -156,6 +162,7 @@ keep_key() {
   local key="$1"
   local provider="$2"
   local current_version="$3"
+  local published_version="${4:-}"
 
   if [[ "$key" == "$provider/latest.json" ]]; then
     return 0
@@ -164,6 +171,10 @@ keep_key() {
     return 0
   fi
   if [[ "$key" == "$provider/$current_version/"* ]]; then
+    return 0
+  fi
+  # The secondary may still serve an older manifest while a new release uploads.
+  if [[ -n "$published_version" && "$key" == "$provider/$published_version/"* ]]; then
     return 0
   fi
 
@@ -178,11 +189,36 @@ prune_current_backend() {
   local rest
   local obj_epoch
   local cutoff_epoch
+  local published_version
+  local latest_json
+  local read_error
+  local error_message
+
+  read_error="$(mktemp "${TMPDIR:-/tmp}/agents-cli-prune-error.XXXXXX")"
+  tmp_files="$tmp_files $read_error"
 
   cutoff_epoch=$(( $(date -u +%s) - grace_days * 86400 ))
 
   while read -r provider current_version; do
     [[ -z "$provider" || -z "$current_version" ]] && continue
+
+    published_version="$current_version"
+    if [[ "$backend_name" == "secondary" ]]; then
+      if latest_json="$(aws s3 cp "s3://$backend_bucket/$provider/latest.json" - \
+        --endpoint-url "$backend_endpoint" --region "$backend_region" 2>"$read_error")"; then
+        published_version="$(extract_version "$latest_json")"
+        if [[ -z "$published_version" || "$published_version" == */* || "$published_version" =~ [[:space:]] ]]; then
+          echo "Invalid secondary latest.json for $provider; refusing to prune." >&2
+          return 1
+        fi
+      elif error_message="$(cat "$read_error")" && [[ "$error_message" == *NoSuchKey* || "$error_message" == *404* || "$error_message" == *"does not exist"* ]]; then
+        published_version=""
+      else
+        cat "$read_error" >&2
+        echo "Failed to read secondary latest.json for $provider; refusing to prune." >&2
+        return 1
+      fi
+    fi
 
     echo "list $backend_name s3://$backend_bucket/$provider/"
     aws s3api list-objects-v2 \
@@ -195,7 +231,7 @@ prune_current_backend() {
       [[ -z "$key" || "$key" == "None" ]] && continue
       [[ "$key" == */ ]] && continue
 
-      if keep_key "$key" "$provider" "$current_version"; then
+      if keep_key "$key" "$provider" "$current_version" "$published_version"; then
         continue
       fi
 
@@ -205,6 +241,11 @@ prune_current_backend() {
         continue
       fi
       if [[ "$grace_days" -gt 0 && "$obj_epoch" -ge "$cutoff_epoch" ]]; then
+        continue
+      fi
+
+      if [[ "$dry_run" == "true" ]]; then
+        echo "would delete $backend_name s3://$backend_bucket/$key"
         continue
       fi
 

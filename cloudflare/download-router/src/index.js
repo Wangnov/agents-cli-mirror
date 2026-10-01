@@ -9,6 +9,12 @@ export default {
     if (!SERVED_PATH_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) {
       return new Response("Not found", { status: 404 });
     }
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
+    }
+    if (!env.GLOBAL_MIRROR_BASE_URL) {
+      return new Response("Missing GLOBAL_MIRROR_BASE_URL", { status: 500 });
+    }
 
     const objectKey = objectKeyForPath(url.pathname);
     const secondaryObjectKey = objectKey;
@@ -21,7 +27,7 @@ export default {
     );
 
     if (secondaryCountryCodes.has(country.toUpperCase()) && hasSecondaryS3Config(env)) {
-      const signedUrl = await presignS3GetUrl({
+      const signingOptions = {
         endpoint: env.SECONDARY_S3_ENDPOINT,
         bucket: env.SECONDARY_S3_BUCKET,
         key: secondaryObjectKey,
@@ -30,18 +36,57 @@ export default {
         secretAccessKey: env.SECONDARY_S3_SECRET_ACCESS_KEY,
         expiresInSeconds: ttlSeconds(env.SECONDARY_S3_SIGNED_URL_TTL_SECONDS),
         responseHeaders: {},
-      });
+      };
+      const signedUrl = await presignS3Url(signingOptions);
 
-      return redirect(signedUrl);
-    }
-
-    if (!env.GLOBAL_MIRROR_BASE_URL) {
-      return new Response("Missing GLOBAL_MIRROR_BASE_URL", { status: 500 });
+      if (await secondaryIsReady(env, objectKey, signingOptions, signedUrl)) {
+        return redirect(request.method === "HEAD"
+          ? await presignS3Url({ ...signingOptions, method: "HEAD" })
+          : signedUrl);
+      }
     }
 
     return redirect(withObjectKeyAndSearch(env.GLOBAL_MIRROR_BASE_URL, objectKey, url.search).toString());
   },
 };
+
+async function secondaryIsReady(env, objectKey, signingOptions, signedUrl) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  const options = { signal: controller.signal, redirect: "manual" };
+  try {
+    if (objectKey.endsWith("/latest.json")) {
+      const [secondary, primary] = await Promise.all([
+        fetch(signedUrl, options),
+        fetch(withObjectKeyAndSearch(env.GLOBAL_MIRROR_BASE_URL, objectKey, ""), options),
+      ]);
+      if (!secondary.ok || !primary.ok) return false;
+      const [secondaryManifest, primaryManifest] = await Promise.all([
+        secondary.json(), primary.json(),
+      ]);
+      return Boolean(primaryManifest.version)
+        && primaryManifest.version === secondaryManifest.version
+        && JSON.stringify(platformEntries(primaryManifest)) === JSON.stringify(platformEntries(secondaryManifest));
+    }
+
+    // Probe headers only; large artifacts still download directly from storage.
+    const headUrl = await presignS3Url({ ...signingOptions, method: "HEAD" });
+    const response = await fetch(headUrl, { ...options, method: "HEAD" });
+    return response.ok;
+  } catch (error) {
+    console.warn("Secondary mirror check failed; using R2", objectKey, error.name);
+    return false;
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+function platformEntries(manifest) {
+  return Object.entries(manifest.platforms || {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([platform, entry]) => [platform, entry.file, entry.sha256, entry.size]);
+}
 
 function hasSecondaryS3Config(env) {
   return Boolean(
@@ -83,7 +128,7 @@ function objectKeyForPath(pathname) {
   return pathname.replace(/^\/+/, "");
 }
 
-async function presignS3GetUrl(options) {
+async function presignS3Url(options) {
   const endpointUrl = new URL(options.endpoint);
   const now = new Date();
   const amzDate = formatAmzDate(now);
@@ -103,7 +148,7 @@ async function presignS3GetUrl(options) {
   const canonicalQuery = canonicalQueryString(queryParams);
   const canonicalHeaders = `host:${endpointUrl.host}\n`;
   const canonicalRequest = [
-    "GET",
+    options.method || "GET",
     canonicalUri,
     canonicalQuery,
     canonicalHeaders,

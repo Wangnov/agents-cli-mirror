@@ -1,0 +1,8 @@
+{
+  "name": "agents-cli-mirror",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/download-router.test.mjs && python3 -m unittest discover -s tests -p 'test_*.py'"
+  }
+}
