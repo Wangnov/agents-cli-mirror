@@ -64,6 +64,17 @@ test("HEAD clients receive a HEAD signature", async (t) => {
   assert.equal(signed.actual, signed.expected);
 });
 
+test("cacheable artifacts bypass Cloudflare HEAD-to-GET conversion", async (t) => {
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    // Model Cloudflare's cold-cache fill and S3's method-bound signature check.
+    const originMethod = options.cache === "no-store" ? options.method : "GET";
+    const signed = signature(url, originMethod);
+    return new Response(null, { status: signed.actual === signed.expected ? 200 : 403 });
+  });
+  const response = await worker.fetch(request("/codex/v2/windows/tool.zip"), env);
+  assert.equal(new URL(response.headers.get("Location")).host, "secondary.example");
+});
+
 for (const status of [404, 403, 500]) {
   test(`secondary HTTP ${status} falls back to R2`, async (t) => {
     t.mock.method(globalThis, "fetch", async () => new Response(null, { status }));
